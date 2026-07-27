@@ -10,7 +10,9 @@ dependencies = [
     "langchain-core>=0.3",
     "pillow>=10.4",
     "numpy>=1.26",
-    # "rembg",             # 抠图(按需启用)
+    # 视频路线后处理(strategy.walk_video / postprocess.video_frames)运行时另需:
+    #   rembg>=2.0(抠图)+ imageio[ffmpeg]>=2.34 或系统 ffmpeg(抽帧)
+    # 已在模块内惰性导入;上线该路线时连同 uv.lock 一起补入正式依赖。
 ]
 
 [tool.uv.sources]
