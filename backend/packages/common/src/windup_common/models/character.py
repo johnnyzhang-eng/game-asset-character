@@ -16,6 +16,7 @@ class ActionType(str, Enum):
     IDLE = "idle"
     WALK = "walk"
     RUN = "run"
+    JUMP = "jump"      # 一次性动作,且要按状态切段(见 postprocess.split_jump_phases)
     ATTACK = "attack"  # slash / thrust / dash 归此
     HIT = "hit"
 
@@ -51,6 +52,9 @@ class ActionSpec(BaseModel):
     stylize: str = "pixel"          # pixel / none
     pixel_h: int = 100              # 像素化目标高(角色像素行数)
     palette_size: int = 32          # 色板色数
+    # 生成提示词的朝向,**必须与母版朝向一致**(对应 Project.perspective):
+    # side=横版侧走 / front=俯视·2.5D 朝观者。不一致会让模型靠转身调和图文矛盾。
+    facing: str = "side"            # side / front
 
     @property
     def n_frames(self) -> int:

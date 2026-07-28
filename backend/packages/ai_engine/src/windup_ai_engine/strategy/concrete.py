@@ -12,17 +12,19 @@ import io
 
 from PIL import Image
 
-from windup_common.models import ActionSpec, CharacterCard, GenRoute
+from windup_common.models import ActionSpec, ActionType, CharacterCard, GenRoute
 from windup_framework.providers import ImageProvider, MatteProvider, VideoProvider
 
+from windup_ai_engine.master_prep import prepare_master
 from windup_ai_engine.ports import Callbacks
 from windup_ai_engine.postprocess import (
     extract_all_frames_bytes,
     master_pixel_spec,
     pick_cycle,
+    pick_oneshot,
     pixelate_frames,
 )
-from windup_ai_engine.prompt import build_walk_prompt
+from windup_ai_engine.prompt import build_jump_prompt, build_walk_prompt
 from windup_ai_engine.strategy.base import DerivationStrategy
 
 
@@ -36,10 +38,17 @@ def _img(png: bytes) -> Image.Image:
     return Image.open(io.BytesIO(png)).convert("RGBA")
 
 
-class VideoFrameStrategy(DerivationStrategy):
-    """步态 / 爆发动作（walk / run / attack）：严格侧面母版 → i2v 视频 → 抽帧 → 抠图 → 像素化。
+# 循环类动作走"步态周期抽单周期闭环";一次性动作**不能闭环**(首尾姿态不同,强行闭环
+# 会把落地帧接回蓄力帧=抽搐),改走"裁动作区间 + 区间内均匀取"。
+CYCLIC_ACTIONS = frozenset({ActionType.IDLE, ActionType.WALK, ActionType.RUN})
 
-    唯一硬前提=严格侧面母版（正面母版会让 i2v 边走边转身，实测 #35）。
+
+class VideoFrameStrategy(DerivationStrategy):
+    """视频路线：母版 → i2v → 抽帧 → 抠图 → 像素化。
+
+    覆盖循环类(walk/run)与一次性类(jump/attack)——按 :data:`CYCLIC_ACTIONS` 分流抽帧方式。
+    硬前提：**提示词朝向必须与母版一致**(side/front)；给正面母版喂侧走词会让模型靠转身
+    调和图文矛盾(实测 #35)。
     """
 
     route = GenRoute.VIDEO_I2V
@@ -48,19 +57,30 @@ class VideoFrameStrategy(DerivationStrategy):
         self._video = video
         self._matte = matte
 
+    def _build_prompt(self, action: ActionSpec) -> str:
+        """按动作类型选提示词;朝向随 ActionSpec.facing。"""
+        if action.action is ActionType.JUMP:
+            return build_jump_prompt(facing=action.facing)
+        return build_walk_prompt(facing=action.facing)
+
     def derive(
         self, card: CharacterCard, action: ActionSpec, cb: Callbacks
     ) -> list[bytes]:
         n = action.n_frames or 8
         cb.progress.step("derive", 0, 3, f"{action.action}: i2v 生成视频")
-        master = cb.store.get(card.master_ref)              # 严格侧面母版 bytes
-        prompt = build_walk_prompt()                        # 只写正向腿部机制 + STRICT SIDE
-        video = self._video.i2v(master, prompt, seconds=5)  # → mp4 bytes
+        master = cb.store.get(card.master_ref)
+        # 母版按动作预处理:jump 要在顶部补空间,否则角色腾空时头顶顶出视频画面被裁
+        framed = prepare_master(master, action.action.value)
+        video = self._video.i2v(framed, self._build_prompt(action), seconds=5)
 
-        cb.progress.step("derive", 1, 3, f"抽帧 + 步态周期取 {n} 帧(无缝 loop)+ 抠图")
-        dense = extract_all_frames_bytes(video)             # 密集帧
-        cycle = pick_cycle(dense, n)                        # 正好一个步态周期(#21 循环闭合)
-        cut = [_img(self._matte.cutout(_png(im))) for im in cycle]
+        dense = extract_all_frames_bytes(video)
+        if action.action in CYCLIC_ACTIONS:
+            cb.progress.step("derive", 1, 3, f"步态周期取 {n} 帧(无缝 loop)+ 抠图")
+            picked = pick_cycle(dense, n)                   # 单周期闭环(#21)
+        else:
+            cb.progress.step("derive", 1, 3, f"裁动作区间取 {n} 帧(不闭环)+ 抠图")
+            picked = pick_oneshot(dense, n)                 # 一次性动作:裁起止
+        cut = [_img(self._matte.cutout(_png(im))) for im in picked]
 
         # 风格化按需(见 ActionSpec.stylize):none=保留 i2v 画风(插画/伪 3D 角色);
         # pixel=像素化。原生像素角色**按母版规格**做:吸附母版像素网格 + 锁母版色板,
@@ -71,7 +91,7 @@ class VideoFrameStrategy(DerivationStrategy):
 
         target_h, palette = action.pixel_h, None
         try:
-            logical_h, pal = master_pixel_spec(_img(master))
+            logical_h, pal = master_pixel_spec(_img(master))   # 用原始母版,不用补过边的
             if logical_h > 8:                      # 母版确为像素画 → 按它的规格走
                 target_h, palette = logical_h, pal
         except Exception:                          # 母版非像素画/量不出 → 回退通用量化

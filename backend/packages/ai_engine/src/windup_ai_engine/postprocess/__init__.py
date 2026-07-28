@@ -1,6 +1,12 @@
 """后处理:把生成帧落地成交付级像素序列帧(抽帧 / 像素化 / 循环闭合 / 对齐 / 打包)。"""
 
 from .loop import find_period, pick_cycle
+from .oneshot import (
+    find_motion_span,
+    foot_line_series,
+    pick_oneshot,
+    split_jump_phases,
+)
 from .pixelate import (
     detect_pixel_size,
     extract_palette,
@@ -24,6 +30,10 @@ __all__ = [
     "master_pixel_spec",
     "find_period",
     "pick_cycle",
+    "find_motion_span",
+    "pick_oneshot",
+    "split_jump_phases",
+    "foot_line_series",
     "extract_frames_bytes",
     "extract_all_frames_bytes",
     "align_bottom_center",

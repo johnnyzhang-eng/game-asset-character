@@ -69,7 +69,11 @@ def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
 
 
 def align_bottom_center(
-    frames: list[Image.Image], cell: int = 256, foot_line: float = 0.92, fill_h: float = 0.80
+    frames: list[Image.Image],
+    cell: int = 256,
+    foot_line: float = 0.92,
+    fill_h: float = 0.80,
+    preserve_lift: bool = False,
 ) -> list[Image.Image]:
     """按脚线对齐到统一画布,消除逐帧画布漂移(Issue #21)。
 
@@ -79,6 +83,10 @@ def align_bottom_center(
 
     水平方向按**主体水平中心**对齐(不含挥出的武器会更好,当前用整体包围盒中心兜底);
     垂直方向按**脚线**(包围盒底边)对齐到 ``foot_line``。
+
+    ``preserve_lift``:**腾空动作(jump)必须开**。默认把每帧的脚锁回同一条地面线 —— 对
+    走路是对的(脚始终在地),但对跳跃会把腾空位移整个抹平,角色永远不离地。开启后以
+    序列里最低的脚线为地面基准,保留每帧相对地面的抬升量。
     """
     import numpy as np
 
@@ -93,20 +101,27 @@ def align_bottom_center(
     heights = [b[3] - b[1] for b in boxes if b]
     if not heights:
         return [Image.new("RGBA", (cell, cell), (0, 0, 0, 0)) for _ in frames]
-    scale = (cell * fill_h) / max(heights)      # 全序列统一定标
+    # 腾空模式:以最低脚线(数值最大 = 站在地上)为地面基准,保留每帧的抬升量
+    ground = max(b[3] for b in boxes if b) if preserve_lift else 0
+    # 定标要把抬升量算进去,否则跳到最高时头顶会顶出画布被切掉
+    if preserve_lift:
+        need = max((ground - b[3]) + (b[3] - b[1]) for b in boxes if b)
+        scale = (cell * fill_h) / max(1, need)
+    else:
+        scale = (cell * fill_h) / max(heights)  # 全序列统一定标
 
     out = []
     for f, box in zip(frames, boxes):
         if box is None:
             out.append(Image.new("RGBA", (cell, cell), (0, 0, 0, 0)))
             continue
-        x0, y0, x1, y1 = box
         crop = f.crop(box)
         w = max(1, round(crop.width * scale))
         h = max(1, round(crop.height * scale))
         crop = crop.resize((w, h), Image.NEAREST)
+        lift = round((ground - box[3]) * scale) if preserve_lift else 0
         canvas = Image.new("RGBA", (cell, cell), (0, 0, 0, 0))
-        canvas.alpha_composite(crop, (cell // 2 - w // 2, int(cell * foot_line) - h))
+        canvas.alpha_composite(crop, (cell // 2 - w // 2, int(cell * foot_line) - h - lift))
         out.append(canvas)
     return out
 

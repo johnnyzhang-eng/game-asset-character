@@ -3,7 +3,8 @@
 分流依据(有实测证据,非拍脑袋,详见关联 Issue #35 的工程文档):
   - 步态位移(walk / run):逐帧独立生成锁不住"哪条腿在前" → 踢踏舞;
     必须走视频 i2v(视频模型天生连贯、腿自然交替)。
-  - 动作爆发(attack = slash / thrust / dash):同走视频 i2v(连续挥砍更顺)。
+  - 动作爆发(attack)与跳跃(jump):同走视频 i2v。但它们是**一次性动作**,抽帧不闭环
+    (见 strategy.concrete.CYCLIC_ACTIONS);jump 还要按状态切段供引擎分段播放。
   - 受击等离散姿势(hit):逐帧图生图(单帧可编辑价值高,无连续步态)。
   - 待机(idle):逐帧生成只抖不呼吸 → 程序化局部呼吸 Idle-B。
 
@@ -21,6 +22,7 @@ from windup_ai_engine.ports import Callbacks
 ROUTE_MATRIX: dict[ActionType, GenRoute] = {
     ActionType.WALK: GenRoute.VIDEO_I2V,
     ActionType.RUN: GenRoute.VIDEO_I2V,
+    ActionType.JUMP: GenRoute.VIDEO_I2V,
     ActionType.ATTACK: GenRoute.VIDEO_I2V,
     ActionType.HIT: GenRoute.PER_FRAME,
     ActionType.IDLE: GenRoute.PROC_IDLE,
