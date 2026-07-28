@@ -8,11 +8,8 @@ from windup_framework.providers.interfaces import (
     MatteProvider,
     VideoProvider,
 )
-from windup_framework.providers.sufy import (
-    RembgMatteProvider,
-    SufyImageProvider,
-    SufyVideoProvider,
-)
+from windup_framework.providers.matte import OnnxU2NetMatteProvider
+from windup_framework.providers.sufy import SufyImageProvider, SufyVideoProvider
 from windup_framework.providers.video import create_video_client
 
 __all__ = [
@@ -24,8 +21,8 @@ __all__ = [
     "ImageProvider",
     "VideoProvider",
     "MatteProvider",
-    # SUFY 实现
+    # 实现
     "SufyVideoProvider",
     "SufyImageProvider",
-    "RembgMatteProvider",
+    "OnnxU2NetMatteProvider",
 ]

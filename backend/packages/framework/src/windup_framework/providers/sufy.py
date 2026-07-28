@@ -16,7 +16,7 @@ import httpx
 
 from windup_framework.config.provider import AIProviderSettings, settings
 
-from .interfaces import ImageProvider, MatteProvider, VideoProvider
+from .interfaces import ImageProvider, VideoProvider
 
 # 只有 kling-video-o1 走 image_list;v2 系列 / sora 走 input_reference(字段按模型选,塞错任务会 failed)。
 _IMAGE_LIST_MODELS = ("kling-video-o1",)
@@ -100,15 +100,6 @@ class SufyVideoProvider(VideoProvider):
             if not url:
                 raise RuntimeError("i2v 未取得视频 URL(超时或失败)")
             return client.get(url).raise_for_status().content
-
-
-class RembgMatteProvider(MatteProvider):
-    """rembg / u2net 主体抠图。frame bytes → 抠好的 PNG(RGBA) bytes。"""
-
-    def cutout(self, frame: bytes) -> bytes:
-        from rembg import remove  # 惰性:onnxruntime 重
-
-        return remove(frame)
 
 
 class SufyImageProvider(ImageProvider):
