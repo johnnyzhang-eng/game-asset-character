@@ -72,8 +72,9 @@ def align_bottom_center(
     frames: list[Image.Image],
     cell: int = 256,
     foot_line: float = 0.92,
-    fill_h: float = 0.80,
+    fill_h: float = 0.62,
     preserve_lift: bool = False,
+    ref_height: float | None = None,
 ) -> list[Image.Image]:
     """按脚线对齐到统一画布,消除逐帧画布漂移(Issue #21)。
 
@@ -84,9 +85,13 @@ def align_bottom_center(
     水平方向按**主体水平中心**对齐(不含挥出的武器会更好,当前用整体包围盒中心兜底);
     垂直方向按**脚线**(包围盒底边)对齐到 ``foot_line``。
 
-    ``preserve_lift``:**腾空动作(jump)必须开**。默认把每帧的脚锁回同一条地面线 —— 对
-    走路是对的(脚始终在地),但对跳跃会把腾空位移整个抹平,角色永远不离地。开启后以
-    序列里最低的脚线为地面基准,保留每帧相对地面的抬升量。
+    ``ref_height``:**跨动作一致性的关键**,单位=传入帧的像素高。给定时按它定标,否则按本
+    序列最高帧。按最高帧定标会让"举过头顶"的动作整段被缩小去迁就那一帧 —— 实测攻击时
+    斧头高举使 bbox 从 485 涨到 660,角色本体因此明显变小;跳跃顶点同理。故传入**参考姿态**
+    (站立)的高度,各动作即共用同一本体尺寸。``fill_h`` 默认 0.62,给举过头顶留出余量。
+
+    ``preserve_lift``:腾空位移**默认不烘进像素**(业界:位移交引擎 root motion)。仅在要把
+    位移画进序列帧时才开;开启后以序列里最低的脚线为地面基准,保留每帧相对地面的抬升量。
     """
     import numpy as np
 
@@ -107,8 +112,10 @@ def align_bottom_center(
     if preserve_lift:
         need = max((ground - b[3]) + (b[3] - b[1]) for b in boxes if b)
         scale = (cell * fill_h) / max(1, need)
+    elif ref_height:
+        scale = (cell * fill_h) / ref_height     # 参考姿态定标(跨动作一致)
     else:
-        scale = (cell * fill_h) / max(heights)  # 全序列统一定标
+        scale = (cell * fill_h) / max(heights)   # 回退:本序列最高帧
 
     out = []
     for f, box in zip(frames, boxes):

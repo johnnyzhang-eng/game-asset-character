@@ -74,7 +74,15 @@ class CharacterGenerator(CharacterGeneratorPort):
             return frames, []
         imgs = [_img(f) for f in frames]
         motion = extract_root_motion(imgs)          # 位移轨道交引擎
-        aligned = align_bottom_center(imgs)         # 序列帧原地
+        # 参考姿态高 = 各帧包围盒高的中位数:比"最高帧"稳(不被举过头顶的武器带偏),
+        # 各动作都以自身中位姿态定标,本体尺寸跨动作一致。
+        import numpy as _np
+        _hs = []
+        for _im in imgs:
+            _ys, _ = _np.where(_np.asarray(_im)[:, :, 3] > 128)
+            if len(_ys):
+                _hs.append(float(_ys.max() - _ys.min()))
+        aligned = align_bottom_center(imgs, ref_height=(float(_np.median(_hs)) if _hs else None))
         # TODO(dev, #21): tail_match 循环闭合(净位移动作先锚点再匹配帧)
         return [_png(im) for im in aligned], motion
 
