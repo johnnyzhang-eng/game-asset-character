@@ -16,7 +16,11 @@ from windup_common.models import ActionSpec, CharacterCard, GenRoute
 from windup_framework.providers import ImageProvider, MatteProvider, VideoProvider
 
 from windup_ai_engine.ports import Callbacks
-from windup_ai_engine.postprocess import extract_frames_bytes, pixelate_frames
+from windup_ai_engine.postprocess import (
+    extract_all_frames_bytes,
+    pick_cycle,
+    pixelate_frames,
+)
 from windup_ai_engine.prompt import build_walk_prompt
 from windup_ai_engine.strategy.base import DerivationStrategy
 
@@ -56,9 +60,10 @@ class VideoFrameStrategy(DerivationStrategy):
         prompt = build_walk_prompt()                        # 只写正向腿部机制 + STRICT SIDE
         video = self._video.i2v(master, prompt, seconds=5)  # → mp4 bytes
 
-        cb.progress.step("derive", 1, 3, f"抽 {n} 帧 + 抠图")
-        raw = extract_frames_bytes(video, n)
-        cut = [_img(self._matte.cutout(_png(im))) for im in raw]
+        cb.progress.step("derive", 1, 3, f"抽帧 + 步态周期取 {n} 帧(无缝 loop)+ 抠图")
+        dense = extract_all_frames_bytes(video)             # 密集帧
+        cycle = pick_cycle(dense, n)                        # 正好一个步态周期(#21 循环闭合)
+        cut = [_img(self._matte.cutout(_png(im))) for im in cycle]
 
         cb.progress.step("derive", 2, 3, "像素化")
         pix = pixelate_frames(cut, target_h=_PIX_H, palette_size=_PALETTE)

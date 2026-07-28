@@ -1,11 +1,9 @@
-"""视频 → 像素走路序列帧(后处理管线)。
+"""视频抽帧 / 对齐 / 打包(后处理管线的帧级工具)。
 
-承接视频路线(Issue #35):i2v 产出的短视频步态真实但为插画质感,本管线把它
-落地成交付级像素序列帧——均匀抽帧 → 抠图(matting, Issue #20)→ 像素化
-(:mod:`.pixelate`)→ 底线对齐(Issue #21)→ 打包 sheet / gif。
-
-重量级依赖(rembg 抠图、抽帧后端)全部在函数内惰性导入,保证模块导入零成本、
-CI 可收集;真正运行时才需要 ``rembg`` 与 ffmpeg。
+承接视频路线(Issue #35):i2v 产出的短视频步态真实但为插画质感。本模块提供抽帧、
+底线对齐(#21)、拼图集 / gif;像素化见 :mod:`.pixelate`、循环闭合见 :mod:`.loop`、
+抠图见 framework 的 MatteProvider(#20)。抽帧后端(imageio/ffmpeg)函数内惰性,
+模块导入零成本、CI 可收集。
 """
 
 from __future__ import annotations
@@ -15,11 +13,9 @@ import tempfile
 
 from PIL import Image
 
-from .pixelate import pixelate_frames
-
 __all__ = [
-    "video_to_pixel_frames",
     "extract_frames_bytes",
+    "extract_all_frames_bytes",
     "align_bottom_center",
     "sprite_sheet",
     "save_gif",
@@ -34,6 +30,14 @@ def extract_frames_bytes(video: bytes, n: int) -> list[Image.Image]:
         return _extract_frames(f.name, n)
 
 
+def extract_all_frames_bytes(video: bytes, cap: int = 150) -> list[Image.Image]:
+    """抽视频全部帧(至多 ``cap``,均匀降采样),供周期检测用。"""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as f:
+        f.write(video)
+        f.flush()
+        return _extract_frames(f.name, cap)
+
+
 def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
     """从视频均匀抽 ``n`` 帧。优先 imageio,回退系统 ffmpeg。"""
     try:
@@ -41,7 +45,8 @@ def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
 
         all_frames = iio.imread(video_path, plugin="pyav")  # (T, H, W, C)
         total = len(all_frames)
-        idx = [round(i * (total - 1) / max(1, n - 1)) for i in range(n)]
+        m = min(n, total)
+        idx = [round(i * (total - 1) / max(1, m - 1)) for i in range(m)]
         return [Image.fromarray(all_frames[i]).convert("RGBA") for i in idx]
     except Exception:
         pass
@@ -58,15 +63,9 @@ def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
         files = sorted(glob.glob(os.path.join(tmp, "f_*.png")))
         if not files:
             raise RuntimeError("抽帧失败:视频无可解码帧")
-        idx = [round(i * (len(files) - 1) / max(1, n - 1)) for i in range(n)]
+        m = min(n, len(files))
+        idx = [round(i * (len(files) - 1) / max(1, m - 1)) for i in range(m)]
         return [Image.open(files[i]).convert("RGBA").copy() for i in idx]
-
-
-def _matte(frame: Image.Image) -> Image.Image:
-    """AI 主体抠图(rembg/u2net)。骨白等浅色角色禁用按颜色抠(Issue #20)。"""
-    from rembg import remove
-
-    return remove(frame).convert("RGBA")
 
 
 def align_bottom_center(
@@ -89,24 +88,6 @@ def align_bottom_center(
         canvas.alpha_composite(crop, (cell // 2 - crop.width // 2, int(cell * foot_line) - crop.height))
         out.append(canvas)
     return out
-
-
-def video_to_pixel_frames(
-    video_path: str,
-    n_frames: int = 8,
-    target_h: int = 100,
-    palette_size: int = 32,
-    cell: int = 256,
-) -> list[Image.Image]:
-    """视频 → 对齐好的像素走路帧(RGBA,统一 ``cell`` 画布)。
-
-    已在骷髅剑士严格侧面母版上端到端验证(Issue #35):8/12 帧、腿清晰交替、
-    不转身、像素风。任意**严格侧面母版**的 i2v 视频都可复用本管线。
-    """
-    raw = _extract_frames(video_path, n_frames)
-    cut = [_matte(f) for f in raw]
-    pix = pixelate_frames(cut, target_h=target_h, palette_size=palette_size)
-    return align_bottom_center(pix, cell=cell)
 
 
 def sprite_sheet(frames: list[Image.Image], bg=(0, 0, 0, 0)) -> Image.Image:
