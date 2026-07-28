@@ -228,12 +228,16 @@ def pixelate_frames(
     target_h: int = 100,
     palette_size: int = 32,
     palette: np.ndarray | None = None,
+    ref_height: float | None = None,
 ) -> list[Image.Image]:
     """批量像素化一组帧,**整段共用一个缩放系数**,便于打包为 sprite sheet。
 
-    ``target_h`` 是**全序列最高帧**的目标像素高,其余帧按同一系数等比缩放 —— 不是把每帧
-    都拉到等高。逐帧拉等高会把走路自然的身高起伏反向变成"忽大忽小"(实测踩过:蹲下的帧
-    被放大)。这样帧间只剩真实姿态差,尺度稳定。
+    ``target_h`` 是**基准姿态**的目标像素高,其余帧按同一系数等比缩放 —— 不是把每帧都拉
+    到等高。逐帧拉等高会把走路自然的身高起伏反向变成"忽大忽小"(实测踩过:蹲下的帧被放大)。
+
+    ``ref_height``:**跨动作一致性的关键**。给定时用它当基准(单位=源图像素),否则用本序列
+    最高帧。同一角色的各个动作若各自取自己的最高帧定标,切换状态时角色会忽大忽小 ——
+    传入同一个基准(如母版姿态的角色高)即可让 idle/walk/jump/attack 共用一套尺度。
     """
     if not frames:
         return []
@@ -241,7 +245,7 @@ def pixelate_frames(
     for f in frames:
         _, y0, _, y1 = _content_bbox(f.convert("RGBA"))
         box_h.append(max(1, y1 - y0))
-    scale = target_h / max(box_h)
+    scale = target_h / (ref_height if ref_height else max(box_h))
     return [
         to_pixel_art(f, max(1, round(h * scale)), palette_size, palette=palette)
         for f, h in zip(frames, box_h)

@@ -46,6 +46,7 @@ def add_headroom(master: bytes, ratio: float = 0.6) -> bytes:
 
 def prepare_master(master: bytes, action: str) -> bytes:
     """按动作类型预处理母版;不需要处理的动作原样返回。"""
-    if action == "jump":
-        return add_headroom(master)
+    if action in ("jump", "attack"):
+        # jump 向上腾空、attack 挥砍过头顶,都会顶出视频画面上沿(实测 attack 15/72 帧触顶)
+        return add_headroom(master, ratio=0.62 if action == "jump" else 0.70)
     return master

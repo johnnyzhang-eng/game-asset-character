@@ -70,4 +70,9 @@ class AssetPackageRef(BaseModel):
     frame_refs: list[str] = Field(default_factory=list)
     plist_ref: str = ""                        # Cocos SpriteFrames
     fps: int = 10
+    # 引擎侧元数据(业界惯例:位移不烘进像素,交引擎驱动):
+    # root_motion 逐帧 (dx, dy) 像素位移,y 向上为正;durations 逐帧时长(ms),
+    # 关键帧(攻击触点 / 跳跃顶点)会加长定格 —— 等时长会让动作发飘、没重量感。
+    root_motion: list[tuple[int, int]] = Field(default_factory=list)
+    durations: list[int] = Field(default_factory=list)
     qa: dict = Field(default_factory=dict)

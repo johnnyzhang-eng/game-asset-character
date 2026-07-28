@@ -8,6 +8,7 @@ from .oneshot import (
     pick_oneshot,
     split_jump_phases,
 )
+from .rootmotion import DEFAULT_FPS_MS, extract_root_motion, frame_durations
 from .pixelate import (
     detect_pixel_size,
     extract_palette,
@@ -36,6 +37,9 @@ __all__ = [
     "pick_oneshot",
     "split_jump_phases",
     "foot_line_series",
+    "extract_root_motion",
+    "frame_durations",
+    "DEFAULT_FPS_MS",
     "extract_frames_bytes",
     "extract_all_frames_bytes",
     "align_bottom_center",

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import io
 
+import numpy as np
 from PIL import Image
 
 from windup_common.models import ActionSpec, ActionType, CharacterCard, GenRoute
@@ -24,7 +25,12 @@ from windup_ai_engine.postprocess import (
     pick_oneshot,
     pixelate_frames,
 )
-from windup_ai_engine.prompt import build_jump_prompt, build_walk_prompt
+from windup_ai_engine.prompt import (
+    build_attack_prompt,
+    build_idle_prompt,
+    build_jump_prompt,
+    build_walk_prompt,
+)
 from windup_ai_engine.strategy.base import DerivationStrategy
 
 
@@ -59,9 +65,13 @@ class VideoFrameStrategy(DerivationStrategy):
 
     def _build_prompt(self, action: ActionSpec) -> str:
         """按动作类型选提示词;朝向随 ActionSpec.facing。"""
-        if action.action is ActionType.JUMP:
-            return build_jump_prompt(facing=action.facing)
-        return build_walk_prompt(facing=action.facing)
+        builders = {
+            ActionType.JUMP: build_jump_prompt,
+            ActionType.IDLE: build_idle_prompt,
+            ActionType.ATTACK: build_attack_prompt,
+        }
+        build = builders.get(action.action, build_walk_prompt)
+        return build(facing=action.facing)
 
     def derive(
         self, card: CharacterCard, action: ActionSpec, cb: Callbacks
@@ -74,6 +84,13 @@ class VideoFrameStrategy(DerivationStrategy):
         video = self._video.i2v(framed, self._build_prompt(action), seconds=5)
 
         dense = extract_all_frames_bytes(video)
+        # 跨动作一致性:用视频首帧(=母版姿态)的角色高当共同定标基准。各动作都从同一母版
+        # 起手,故此值一致 —— 否则各动作按自己最高帧定标,切状态时角色会忽大忽小。
+        ref_h = None
+        if dense:
+            _first = _img(self._matte.cutout(_png(dense[0])))
+            _ys, _ = np.where(np.asarray(_first)[:, :, 3] > 128)
+            ref_h = float(_ys.max() - _ys.min()) if len(_ys) else None
         if action.action in CYCLIC_ACTIONS:
             cb.progress.step("derive", 1, 3, f"步态周期取 {n} 帧(无缝 loop)+ 抠图")
             picked = pick_cycle(dense, n)                   # 单周期闭环(#21)
@@ -101,7 +118,8 @@ class VideoFrameStrategy(DerivationStrategy):
             f"像素化(h={target_h}{'·锁母版色板' if palette is not None else '·通用量化'})",
         )
         pix = pixelate_frames(
-            cut, target_h=target_h, palette_size=action.palette_size, palette=palette
+            cut, target_h=target_h, palette_size=action.palette_size,
+            palette=palette, ref_height=ref_h,
         )
         return [_png(p) for p in pix]
 

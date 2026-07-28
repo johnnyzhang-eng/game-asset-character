@@ -12,10 +12,21 @@ import io
 
 from PIL import Image
 
-from windup_common.models import ActionSpec, AssetPackageRef, CharacterCard, GenRoute
+from windup_common.models import (
+    ActionSpec,
+    ActionType,
+    AssetPackageRef,
+    CharacterCard,
+    GenRoute,
+)
 
 from windup_ai_engine.ports import Callbacks, CharacterGeneratorPort
-from windup_ai_engine.postprocess import align_bottom_center, sprite_sheet
+from windup_ai_engine.postprocess import (
+    align_bottom_center,
+    extract_root_motion,
+    frame_durations,
+    sprite_sheet,
+)
 from windup_ai_engine.strategy.base import ROUTE_MATRIX, DerivationStrategy
 
 
@@ -47,21 +58,33 @@ class CharacterGenerator(CharacterGeneratorPort):
         frames = strategy.derive(card, action, cb)
 
         # ③ 最后一公里 + 打包(护城河,串联)
-        frames = self._lastmile(frames, action, cb)
-        return self._package(card, action, frames, cb)
+        frames, motion = self._lastmile(frames, action, cb)
+        return self._package(card, action, frames, cb, motion)
 
     def _lastmile(
         self, frames: list[bytes], action: ActionSpec, cb: Callbacks
-    ) -> list[bytes]:
-        cb.progress.step("lastmile", 1, 3, "脚线锚点对齐")
-        if not frames or not all(frames):   # 含空桩帧(未开发路线)→ 跳过对齐
-            return frames
-        aligned = align_bottom_center([_img(f) for f in frames])
+    ) -> tuple[list[bytes], list[tuple[int, int]]]:
+        """脚线对齐 + 抽出 root motion。返回(原地序列帧, 逐帧位移)。
+
+        业界惯例:位移**不烘进像素**,序列帧保持原地、位移交引擎驱动(玩家要即时操控;
+        平台游戏跳跃=姿势定格 + 引擎物理)。故先从对齐前的帧量出位移轨道,再把帧对齐成原地。
+        """
+        cb.progress.step("lastmile", 1, 3, "抽 root motion + 脚线对齐(原地)")
+        if not frames or not all(frames):   # 含空桩帧(未开发路线)→ 跳过
+            return frames, []
+        imgs = [_img(f) for f in frames]
+        motion = extract_root_motion(imgs)          # 位移轨道交引擎
+        aligned = align_bottom_center(imgs)         # 序列帧原地
         # TODO(dev, #21): tail_match 循环闭合(净位移动作先锚点再匹配帧)
-        return [_png(im) for im in aligned]
+        return [_png(im) for im in aligned], motion
 
     def _package(
-        self, card: CharacterCard, action: ActionSpec, frames: list[bytes], cb: Callbacks
+        self,
+        card: CharacterCard,
+        action: ActionSpec,
+        frames: list[bytes],
+        cb: Callbacks,
+        motion: list[tuple[int, int]] | None = None,
     ) -> AssetPackageRef:
         cb.progress.step("package", 2, 3, "sprite sheet + 存储")
         sheet_ref = ""
@@ -70,10 +93,19 @@ class CharacterGenerator(CharacterGeneratorPort):
             sheet_png = _png(sprite_sheet([_img(f) for f in valid]))
             sheet_ref = cb.store.put("sheet", sheet_png, {"action": action.action.value})
         # TODO(dev, #22): 写 Cocos plist(SpriteFrames)→ plist_ref
+        # 关键帧定格:attack 取位移/形变最大处(触点),jump 取最高点(顶点)
+        key = None
+        if motion:
+            if action.action is ActionType.ATTACK:
+                key = max(range(len(motion)), key=lambda i: abs(motion[i][0]))
+            elif action.action is ActionType.JUMP:
+                key = max(range(len(motion)), key=lambda i: motion[i][1])
         return AssetPackageRef(
             character=card.name,
             action=action.action,
             fps=action.fps,
             sheet_ref=sheet_ref,
             frame_refs=[cb.store.put("frame", f, {"i": i}) for i, f in enumerate(frames)],
+            root_motion=motion or [],
+            durations=frame_durations(action.action.value, len(frames), key_frame=key),
         )
