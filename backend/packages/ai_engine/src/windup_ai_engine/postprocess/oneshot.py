@@ -16,7 +16,13 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-__all__ = ["find_motion_span", "pick_oneshot", "split_jump_phases", "foot_line_series"]
+__all__ = [
+    "find_motion_span",
+    "first_action_end",
+    "pick_oneshot",
+    "split_jump_phases",
+    "foot_line_series",
+]
 
 
 def _frame_energy(frames: list[Image.Image], size: int = 64) -> np.ndarray:
@@ -45,11 +51,50 @@ def find_motion_span(frames: list[Image.Image], rel_thr: float = 0.25) -> tuple[
     return start, end
 
 
-def pick_oneshot(frames: list[Image.Image], n: int) -> list[Image.Image]:
-    """一次性动作抽 ``n`` 帧:先裁到动作区间,再在区间内均匀取(不闭环)。"""
+def first_action_end(
+    frames: list[Image.Image], start: int, end: int, rise_factor: float = 1.25, min_gap: int = 2
+) -> int:
+    """在 ``[start, end]`` 内找**第一次**动作的结束帧。
+
+    i2v 常在 5s 里把一次性动作**复读第二遍**(实测:提示词写了 "ONCE",兽人仍跳了两次),
+    直接取整个区间会把两次动作压进一套序列帧。
+
+    判据:以起始帧为参照算逐帧差异 ``dev``,取峰值后的**第一个谷底** —— 谷底=最接近
+    起始姿态的时刻(落回地面 / 收回戒备),谷底之后 ``dev`` 重新上升即第二次动作起手。
+    两个实测踩过的错解法:
+      - 看"帧间安静":会在**顶点悬停**处误触发,把动作截在半空;
+      - 看 dev 是否跌破峰值的固定比例:落地姿态与起始并不完全相同(实测谷底 10.4 vs
+        峰值 24.9),阈值定高了切不动、定低了又会误切,不如直接找谷底。
+    """
+    if end - start < 3:
+        return end
+    ref = np.asarray(frames[start].convert("L").resize((64, 64)), dtype=np.float32)
+    dev = np.array(
+        [
+            np.abs(np.asarray(f.convert("L").resize((64, 64)), dtype=np.float32) - ref).mean()
+            for f in frames[start : end + 1]
+        ]
+    )
+    peak_i = int(np.argmax(dev))
+    valley_i, valley_v = peak_i, float(dev[peak_i])
+    for i in range(peak_i + 1, len(dev)):
+        if dev[i] < valley_v:
+            valley_i, valley_v = i, float(dev[i])
+        elif dev[i] > valley_v * rise_factor and i - valley_i >= min_gap:
+            return min(end, start + valley_i)      # 谷底=第一次动作收势
+    return end
+
+
+def pick_oneshot(frames: list[Image.Image], n: int, first_only: bool = True) -> list[Image.Image]:
+    """一次性动作抽 ``n`` 帧:裁到动作区间 → 只留第一次动作 → 区间内均匀取(不闭环)。
+
+    ``first_only`` 默认开:防 i2v 在 5s 内复读第二遍动作被一起抽进来。
+    """
     if len(frames) <= n:
         return frames
     start, end = find_motion_span(frames)
+    if first_only:
+        end = max(start + 1, first_action_end(frames, start, end))
     span = frames[start : end + 1]
     if len(span) <= n:
         return span

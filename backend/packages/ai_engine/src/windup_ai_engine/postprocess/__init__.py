@@ -3,6 +3,7 @@
 from .loop import find_period, pick_cycle
 from .oneshot import (
     find_motion_span,
+    first_action_end,
     foot_line_series,
     pick_oneshot,
     split_jump_phases,
@@ -31,6 +32,7 @@ __all__ = [
     "find_period",
     "pick_cycle",
     "find_motion_span",
+    "first_action_end",
     "pick_oneshot",
     "split_jump_phases",
     "foot_line_series",
