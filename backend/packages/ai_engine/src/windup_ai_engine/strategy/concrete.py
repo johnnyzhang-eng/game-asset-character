@@ -18,6 +18,7 @@ from windup_framework.providers import ImageProvider, MatteProvider, VideoProvid
 from windup_ai_engine.ports import Callbacks
 from windup_ai_engine.postprocess import (
     extract_all_frames_bytes,
+    master_pixel_spec,
     pick_cycle,
     pixelate_frames,
 )
@@ -61,13 +62,27 @@ class VideoFrameStrategy(DerivationStrategy):
         cycle = pick_cycle(dense, n)                        # 正好一个步态周期(#21 循环闭合)
         cut = [_img(self._matte.cutout(_png(im))) for im in cycle]
 
-        # 风格化按需:pixel=像素化(原生像素角色复原像素感);none=保留 i2v 插画质感。
-        # 插画风角色像素化会出不协调色块,故做成开关而非硬编码(见 ActionSpec.stylize)。
+        # 风格化按需(见 ActionSpec.stylize):none=保留 i2v 画风(插画/伪 3D 角色);
+        # pixel=像素化。原生像素角色**按母版规格**做:吸附母版像素网格 + 锁母版色板,
+        # 顺带消掉首帧 JPG / H.264 在硬边留下的灰颗粒(实测:通用降采样+量化反而更糊)。
         if action.stylize == "none":
             cb.progress.step("derive", 2, 3, "保留 i2v 画风(不像素化)")
             return [_png(im) for im in cut]
-        cb.progress.step("derive", 2, 3, "像素化")
-        pix = pixelate_frames(cut, target_h=action.pixel_h, palette_size=action.palette_size)
+
+        target_h, palette = action.pixel_h, None
+        try:
+            logical_h, pal = master_pixel_spec(_img(master))
+            if logical_h > 8:                      # 母版确为像素画 → 按它的规格走
+                target_h, palette = logical_h, pal
+        except Exception:                          # 母版非像素画/量不出 → 回退通用量化
+            pass
+        cb.progress.step(
+            "derive", 2, 3,
+            f"像素化(h={target_h}{'·锁母版色板' if palette is not None else '·通用量化'})",
+        )
+        pix = pixelate_frames(
+            cut, target_h=target_h, palette_size=action.palette_size, palette=palette
+        )
         return [_png(p) for p in pix]
 
 

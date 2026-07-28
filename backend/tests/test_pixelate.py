@@ -60,3 +60,44 @@ def test_to_pixel_art_rejects_bad_height():
 
     with pytest.raises(ValueError):
         to_pixel_art(_synthetic_char(), target_h=0)
+
+
+def _pixel_art(block=8, logical_h=20, bg=(255, 255, 255)) -> Image.Image:
+    """合成像素画:每个逻辑像素放大成 block×block 方块,白底(模拟母版)。"""
+    colors = [(200, 60, 60), (60, 120, 200), (40, 160, 90)]
+    small = np.full((logical_h, logical_h // 2, 3), bg, dtype=np.uint8)
+    for y in range(4, logical_h - 4):
+        for x in range(2, logical_h // 2 - 2):
+            small[y, x] = colors[(x + y) % len(colors)]
+    img = Image.fromarray(small, "RGB").resize(
+        (small.shape[1] * block, logical_h * block), Image.NEAREST
+    )
+    return img.convert("RGBA")
+
+
+def test_detect_pixel_size_finds_block():
+    from windup_ai_engine.postprocess import detect_pixel_size
+
+    assert detect_pixel_size(_pixel_art(block=8)) == 8
+    assert detect_pixel_size(_pixel_art(block=12)) == 12
+
+
+def test_master_pixel_spec_gives_logical_height_and_palette():
+    from windup_ai_engine.postprocess import master_pixel_spec
+
+    logical_h, palette = master_pixel_spec(_pixel_art(block=8, logical_h=20))
+    assert 10 <= logical_h <= 14      # 主体(去掉白边)约 12 个逻辑像素高
+    assert 2 <= len(palette) <= 32
+    # 色板不应被白底/抗锯齿近白色占据
+    assert not (palette.astype(int).sum(axis=1) > 700).all()
+
+
+def test_palette_lock_restricts_output_colors():
+    """锁色板后,输出颜色必须全部来自给定色板(用于消掉压缩灰颗粒)。"""
+    palette = np.array([[200, 60, 60], [60, 120, 200]], dtype=np.uint8)
+    noisy = _synthetic_char()
+    out = to_pixel_art(noisy, target_h=24, palette=palette)
+    rgb = np.asarray(out.convert("RGB")).reshape(-1, 3)
+    used = np.unique(rgb, axis=0)
+    for c in used:
+        assert (c == palette).all(axis=1).any(), f"{c} 不在色板内"
