@@ -40,12 +40,17 @@ class CharacterCard(BaseModel):
 
 
 class ActionSpec(BaseModel):
-    """动作规格 —— 帧数 / 帧率 / 循环模式 / 逐帧姿势。"""
+    """动作规格 —— 帧数 / 帧率 / 循环模式 / 逐帧姿势 / 风格化。"""
 
     action: ActionType
     fps: int = 10
     loop: str = "linear"            # none / linear / pingpong
     poses: list[str] = Field(default_factory=list)
+    # 风格化:pixel=像素化(原生像素角色 i2v 后复原像素感);none=保留 i2v 插画质感。
+    # 不该焊死——插画风角色像素化会出不协调色块(有损近似);默认由 CharacterCard 画风决定。
+    stylize: str = "pixel"          # pixel / none
+    pixel_h: int = 100              # 像素化目标高(角色像素行数)
+    palette_size: int = 32          # 色板色数
 
     @property
     def n_frames(self) -> int:

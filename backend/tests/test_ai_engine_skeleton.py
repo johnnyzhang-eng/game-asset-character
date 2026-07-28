@@ -90,6 +90,13 @@ def test_generate_walk_is_wired_end_to_end():
     assert pkg.sheet_ref                     # 真实拼图集落存储
 
 
+def test_action_spec_stylize_defaults_and_toggle():
+    # 像素化是开关(默认 pixel),可关成 none 保留 i2v 画风
+    assert ActionSpec(action=ActionType.WALK).stylize == "pixel"
+    a = ActionSpec(action=ActionType.WALK, stylize="none")
+    assert a.stylize == "none"
+
+
 def test_real_video_strategy_is_registered_for_video_route():
     # 真实 VideoFrameStrategy 可构造且声明视频路线(derive 联网,不在此跑)
     class _V:

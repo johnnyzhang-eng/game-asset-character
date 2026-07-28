@@ -24,10 +24,6 @@ from windup_ai_engine.postprocess import (
 from windup_ai_engine.prompt import build_walk_prompt
 from windup_ai_engine.strategy.base import DerivationStrategy
 
-# 像素化默认参数（角色约占这么多像素行 + 色板色数）。
-_PIX_H = 100
-_PALETTE = 32
-
 
 def _png(img: Image.Image) -> bytes:
     buf = io.BytesIO()
@@ -65,8 +61,13 @@ class VideoFrameStrategy(DerivationStrategy):
         cycle = pick_cycle(dense, n)                        # 正好一个步态周期(#21 循环闭合)
         cut = [_img(self._matte.cutout(_png(im))) for im in cycle]
 
+        # 风格化按需:pixel=像素化(原生像素角色复原像素感);none=保留 i2v 插画质感。
+        # 插画风角色像素化会出不协调色块,故做成开关而非硬编码(见 ActionSpec.stylize)。
+        if action.stylize == "none":
+            cb.progress.step("derive", 2, 3, "保留 i2v 画风(不像素化)")
+            return [_png(im) for im in cut]
         cb.progress.step("derive", 2, 3, "像素化")
-        pix = pixelate_frames(cut, target_h=_PIX_H, palette_size=_PALETTE)
+        pix = pixelate_frames(cut, target_h=action.pixel_h, palette_size=action.palette_size)
         return [_png(p) for p in pix]
 
 
