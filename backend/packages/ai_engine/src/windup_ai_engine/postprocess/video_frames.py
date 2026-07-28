@@ -71,21 +71,42 @@ def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
 def align_bottom_center(
     frames: list[Image.Image], cell: int = 256, foot_line: float = 0.92, fill_h: float = 0.80
 ) -> list[Image.Image]:
-    """按主体包围盒底边中心对齐到统一画布,消除逐帧画布漂移(Issue #21)。"""
+    """按脚线对齐到统一画布,消除逐帧画布漂移(Issue #21)。
+
+    **整段共用一个缩放系数**(取全序列最高帧定标),不逐帧归一化 —— 逐帧各自缩放到等高
+    会把走路自然的身高起伏(实测约 4%)反向变成"忽大忽小":蹲下的帧被放大、伸展的帧被
+    缩小。统一缩放后帧间只剩真实姿态差,尺度稳定。
+
+    水平方向按**主体水平中心**对齐(不含挥出的武器会更好,当前用整体包围盒中心兜底);
+    垂直方向按**脚线**(包围盒底边)对齐到 ``foot_line``。
+    """
     import numpy as np
 
-    out = []
+    boxes: list[tuple[int, int, int, int] | None] = []
     for f in frames:
-        arr = np.asarray(f)
-        ys, xs = np.where(arr[:, :, 3] > 128)
-        if not len(ys):
+        ys, xs = np.where(np.asarray(f)[:, :, 3] > 128)
+        boxes.append(
+            (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+            if len(ys)
+            else None
+        )
+    heights = [b[3] - b[1] for b in boxes if b]
+    if not heights:
+        return [Image.new("RGBA", (cell, cell), (0, 0, 0, 0)) for _ in frames]
+    scale = (cell * fill_h) / max(heights)      # 全序列统一定标
+
+    out = []
+    for f, box in zip(frames, boxes):
+        if box is None:
             out.append(Image.new("RGBA", (cell, cell), (0, 0, 0, 0)))
             continue
-        crop = f.crop((int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1))
-        scale = (cell * fill_h) / crop.height
-        crop = crop.resize((max(1, round(crop.width * scale)), max(1, round(crop.height * scale))), Image.NEAREST)
+        x0, y0, x1, y1 = box
+        crop = f.crop(box)
+        w = max(1, round(crop.width * scale))
+        h = max(1, round(crop.height * scale))
+        crop = crop.resize((w, h), Image.NEAREST)
         canvas = Image.new("RGBA", (cell, cell), (0, 0, 0, 0))
-        canvas.alpha_composite(crop, (cell // 2 - crop.width // 2, int(cell * foot_line) - crop.height))
+        canvas.alpha_composite(crop, (cell // 2 - w // 2, int(cell * foot_line) - h))
         out.append(canvas)
     return out
 

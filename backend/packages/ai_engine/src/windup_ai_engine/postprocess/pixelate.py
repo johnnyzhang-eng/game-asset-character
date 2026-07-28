@@ -131,14 +131,15 @@ def extract_palette(
     return pal[used[used < len(pal)]]
 
 
-def master_pixel_spec(master: Image.Image, max_colors: int = 32) -> tuple[int, np.ndarray]:
+def master_pixel_spec(master: Image.Image, max_colors: int = 48) -> tuple[int, np.ndarray]:
     """从母版量出 (角色的逻辑像素高, 母版色板)。
 
     逻辑像素高 = 母版里角色占的像素行数 ÷ 原生像素块边长 —— 即"这个角色本来是多少
     像素高的精灵"。用它当 ``target_h`` 可自动吸附网格,不必人肉猜分辨率。
 
-    ``max_colors`` 别调大:实测 64 色时中位切分会给"角色/白底之间的抗锯齿近白色"
-    单独分箱,视频里的浅色噪点就近吸附成白点、满身白斑;32 色不会。
+    ``max_colors`` 实测取值:32 太少 —— 中位切分按面积分箱,大面积色(如裸腿肤色/棕靴)
+    会挤占名额,小面积但需渐变的衣服色档位不足 → 中间调就近吸到邻近色相(绿衣泛橄榄黄);
+    96 太多 —— 抗锯齿近白色重新拿到独立分箱 → 边缘冒白噪点。48 是实测的安全区。
     """
     x0, y0, x1, y1 = _content_bbox(master.convert("RGBA"))
     block = detect_pixel_size(master)
@@ -146,21 +147,38 @@ def master_pixel_spec(master: Image.Image, max_colors: int = 32) -> tuple[int, n
     return logical_h, extract_palette(master, max_colors=max_colors)
 
 
-def _snap_to_palette(rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
-    """把每个像素吸附到色板中最近的颜色(欧氏距离,分块避免大内存)。
+def _to_perceptual(rgb: np.ndarray) -> np.ndarray:
+    """RGB → 近似感知空间(亮度 + 两个色差轴),float32。
 
-    必须用 int32:255² = 65025 超出 int16 上限,平方距离会溢出成负数 → 吸附到错误
-    颜色(实测踩过:绿衣被映射成肉色)。
+    直接在 RGB 里取最近邻会**跳色相**:绿衣的中间调可能被吸到橄榄黄(实测踩过)。
+    换成亮度/色差轴并给色差加权后,同色相内的明暗过渡优先匹配,色相跳变被压住。
+    这里用 YCbCr 型线性变换(比 Lab 便宜得多,足够拉开色相)。
     """
-    flat = rgb.reshape(-1, 3).astype(np.int32)
-    pal = palette.astype(np.int32)
-    out = np.empty_like(flat)
+    f = rgb.astype(np.float32)
+    r, g, b = f[..., 0], f[..., 1], f[..., 2]
+    y = 0.299 * r + 0.587 * g + 0.114 * b
+    cb = b - y
+    cr = r - y
+    w = 2.0  # 色差权重 >1:宁可亮度差一点,也别换色相
+    return np.stack([y, w * cb, w * cr], axis=-1)
+
+
+def _snap_to_palette(rgb: np.ndarray, palette: np.ndarray) -> np.ndarray:
+    """把每个像素吸附到色板中最近的颜色(感知空间最近邻,分块避免大内存)。
+
+    用 float32 感知空间:①避免 int16 平方距离溢出(255² > 32767,实测让绿衣变肉色);
+    ②按色相优先匹配,防止 RGB 空间里的跨色相跳变。
+    """
+    flat = _to_perceptual(rgb).reshape(-1, 3)
+    pal_p = _to_perceptual(palette).reshape(-1, 3)
+    pal_rgb = palette.astype(np.uint8).reshape(-1, 3)
+    out = np.empty((len(flat), 3), dtype=np.uint8)
     step = 65536
     for i in range(0, len(flat), step):
         chunk = flat[i : i + step]
-        d = ((chunk[:, None, :] - pal[None, :, :]) ** 2).sum(axis=2)
-        out[i : i + step] = pal[d.argmin(axis=1)]
-    return out.reshape(rgb.shape).astype(np.uint8)
+        d = ((chunk[:, None, :] - pal_p[None, :, :]) ** 2).sum(axis=2)
+        out[i : i + step] = pal_rgb[d.argmin(axis=1)]
+    return out.reshape(rgb.shape)
 
 
 def to_pixel_art(
@@ -211,5 +229,20 @@ def pixelate_frames(
     palette_size: int = 32,
     palette: np.ndarray | None = None,
 ) -> list[Image.Image]:
-    """批量像素化一组帧,像素高与色板对齐,便于打包为 sprite sheet。"""
-    return [to_pixel_art(f, target_h, palette_size, palette=palette) for f in frames]
+    """批量像素化一组帧,**整段共用一个缩放系数**,便于打包为 sprite sheet。
+
+    ``target_h`` 是**全序列最高帧**的目标像素高,其余帧按同一系数等比缩放 —— 不是把每帧
+    都拉到等高。逐帧拉等高会把走路自然的身高起伏反向变成"忽大忽小"(实测踩过:蹲下的帧
+    被放大)。这样帧间只剩真实姿态差,尺度稳定。
+    """
+    if not frames:
+        return []
+    box_h = []
+    for f in frames:
+        _, y0, _, y1 = _content_bbox(f.convert("RGBA"))
+        box_h.append(max(1, y1 - y0))
+    scale = target_h / max(box_h)
+    return [
+        to_pixel_art(f, max(1, round(h * scale)), palette_size, palette=palette)
+        for f, h in zip(frames, box_h)
+    ]
