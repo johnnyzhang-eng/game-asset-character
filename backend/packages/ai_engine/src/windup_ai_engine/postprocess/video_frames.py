@@ -17,7 +17,21 @@ from PIL import Image
 
 from .pixelate import pixelate_frames
 
-__all__ = ["video_to_pixel_frames", "sprite_sheet", "save_gif"]
+__all__ = [
+    "video_to_pixel_frames",
+    "extract_frames_bytes",
+    "align_bottom_center",
+    "sprite_sheet",
+    "save_gif",
+]
+
+
+def extract_frames_bytes(video: bytes, n: int) -> list[Image.Image]:
+    """从视频 bytes 均匀抽 ``n`` 帧(供后端 strategy 用,provider 返回的是 bytes)。"""
+    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=True) as f:
+        f.write(video)
+        f.flush()
+        return _extract_frames(f.name, n)
 
 
 def _extract_frames(video_path: str, n: int) -> list[Image.Image]:
@@ -55,8 +69,8 @@ def _matte(frame: Image.Image) -> Image.Image:
     return remove(frame).convert("RGBA")
 
 
-def _align_bottom_center(
-    frames: list[Image.Image], cell: int, foot_line: float = 0.92, fill_h: float = 0.80
+def align_bottom_center(
+    frames: list[Image.Image], cell: int = 256, foot_line: float = 0.92, fill_h: float = 0.80
 ) -> list[Image.Image]:
     """按主体包围盒底边中心对齐到统一画布,消除逐帧画布漂移(Issue #21)。"""
     import numpy as np
@@ -92,7 +106,7 @@ def video_to_pixel_frames(
     raw = _extract_frames(video_path, n_frames)
     cut = [_matte(f) for f in raw]
     pix = pixelate_frames(cut, target_h=target_h, palette_size=palette_size)
-    return _align_bottom_center(pix, cell=cell)
+    return align_bottom_center(pix, cell=cell)
 
 
 def sprite_sheet(frames: list[Image.Image], bg=(0, 0, 0, 0)) -> Image.Image:

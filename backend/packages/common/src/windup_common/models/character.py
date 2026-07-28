@@ -1,0 +1,64 @@
+"""共享 DTO —— 跨层契约(common,无内部依赖)。
+
+产品核心实体的数据模型:角色卡(一致性主键)、动作规格、生成路线枚举、资产包引用。
+仅定义结构,不含行为。ai_engine / app 均依赖此。
+"""
+from __future__ import annotations
+
+from enum import Enum
+
+from pydantic import BaseModel, Field
+
+
+class ActionType(str, Enum):
+    """动作类型 —— 决定走哪条生成 strategy(见 ai_engine.strategy.ROUTE_MATRIX)。"""
+
+    IDLE = "idle"
+    WALK = "walk"
+    RUN = "run"
+    ATTACK = "attack"  # slash / thrust / dash 归此
+    HIT = "hit"
+
+
+class GenRoute(str, Enum):
+    """生成路线 —— 实测挣得的分流依据(见 strategy 层 docstring)。"""
+
+    VIDEO_I2V = "video_i2v"   # 步态位移动作:图生视频(连贯交替腿)
+    PER_FRAME = "per_frame"   # 离散姿势:逐帧图生图(单帧可编辑)
+    PROC_IDLE = "proc_idle"   # 待机:程序化局部呼吸(Idle-B)
+
+
+class CharacterCard(BaseModel):
+    """角色卡 —— 一致性主键 + 资产库基础(产品核心实体)。"""
+
+    name: str
+    desc: str                       # 身份描述(喂模型锁一致性)
+    palette: str = ""
+    view: str = "pseudo-side"       # side / topdown / isometric
+    master_ref: str = ""            # 定妆母版的存储 ref(对象存储,非本地路径)
+    version: str = "v1"
+
+
+class ActionSpec(BaseModel):
+    """动作规格 —— 帧数 / 帧率 / 循环模式 / 逐帧姿势。"""
+
+    action: ActionType
+    fps: int = 10
+    loop: str = "linear"            # none / linear / pingpong
+    poses: list[str] = Field(default_factory=list)
+
+    @property
+    def n_frames(self) -> int:
+        return len(self.poses)
+
+
+class AssetPackageRef(BaseModel):
+    """生成产出 —— 引擎可用资产包的存储引用(二进制在对象存储)。"""
+
+    character: str
+    action: ActionType
+    sheet_ref: str = ""                        # sprite sheet 存储 ref
+    frame_refs: list[str] = Field(default_factory=list)
+    plist_ref: str = ""                        # Cocos SpriteFrames
+    fps: int = 10
+    qa: dict = Field(default_factory=dict)

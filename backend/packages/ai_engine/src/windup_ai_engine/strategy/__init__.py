@@ -1,5 +1,12 @@
-"""strategy:各动作的派生编排(视频路线 / 逐帧路线分流)。"""
+"""strategy:动作 → 生成路线分流(ROUTE_MATRIX)+ 三条 DerivationStrategy。"""
 
-from .walk_video import derive_walk_frames, generate_walk_video
+from .base import ROUTE_MATRIX, DerivationStrategy
+from .concrete import PerFrameStrategy, ProcIdleStrategy, VideoFrameStrategy
 
-__all__ = ["generate_walk_video", "derive_walk_frames"]
+__all__ = [
+    "ROUTE_MATRIX",
+    "DerivationStrategy",
+    "VideoFrameStrategy",
+    "PerFrameStrategy",
+    "ProcIdleStrategy",
+]
