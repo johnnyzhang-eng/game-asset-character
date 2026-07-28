@@ -1,4 +1,12 @@
-"""母版预处理:按动作给母版留出运动方向的空间。
+"""母版规格与预处理:每个动作需要什么样的母版。
+
+**核心规律(三次实测验证,写死为契约):母版姿态决定动作,提示词只能微调。**
+  - walk:母版**朝侧向**才不转身;正面母版配侧走词 → 模型靠转身调和图文矛盾。
+  - jump:母版**顶部留白**才不被视频画面裁掉。
+  - attack:必须给**极限蓄力母版**(武器已拉到身后腰际)。用站立母版时,即使提示词写死
+    "武器不过头顶 / 不转身 / 只做一次",模型仍会抡过头顶、转到背面、劈两次 —— 强动作
+    先验压不住;换蓄力母版后模型只能"接着往前挥",没有再抡起的空间。
+
 
 实测教训:母版里角色居中、占 ~70% 画面高时,i2v 跳跃会让角色**头顶顶出视频画面上沿**
 被裁掉(生成本身没错,是构图没留够空间)。规则同 MasterSpec 的"运动方向多留白":
@@ -15,7 +23,21 @@ import io
 import numpy as np
 from PIL import Image
 
-__all__ = ["add_headroom", "prepare_master"]
+__all__ = ["add_headroom", "prepare_master", "MASTER_POSES"]
+
+# 各动作所需的母版姿态(生成专用母版时的姿势描述)。空=可直接用中性站立母版。
+MASTER_POSES = {
+    "walk": "",     # 中性站立即可,但必须朝侧向
+    "run": "",
+    "idle": "",
+    "jump": "",     # 中性站立 + 顶部留白(见 prepare_master)
+    "attack": (
+        "extreme wind-up stance for a horizontal slash: the weapon drawn far BACK behind the body "
+        "at WAIST height, the torso twisted back and coiled, weight fully loaded on the back leg, "
+        "both arms low and pulled back, the weapon staying BELOW the shoulders; "
+        "leave generous empty space on the swing side"
+    ),
+}
 
 
 def _bg_color(img: Image.Image) -> tuple[int, int, int]:

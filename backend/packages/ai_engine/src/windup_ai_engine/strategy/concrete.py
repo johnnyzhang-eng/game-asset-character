@@ -96,7 +96,8 @@ class VideoFrameStrategy(DerivationStrategy):
             picked = pick_cycle(dense, n)                   # 单周期闭环(#21)
         else:
             cb.progress.step("derive", 1, 3, f"裁动作区间取 {n} 帧(不闭环)+ 抠图")
-            picked = pick_oneshot(dense, n)                 # 一次性动作:裁起止
+            kind = "airborne" if action.action is ActionType.JUMP else "swing"
+            picked = pick_oneshot(dense, n, kind=kind)      # 一次性动作:裁起止
         cut = [_img(self._matte.cutout(_png(im))) for im in picked]
 
         # 风格化按需(见 ActionSpec.stylize):none=保留 i2v 画风(插画/伪 3D 角色);

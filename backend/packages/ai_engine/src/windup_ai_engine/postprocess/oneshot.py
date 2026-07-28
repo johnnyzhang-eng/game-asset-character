@@ -51,50 +51,72 @@ def find_motion_span(frames: list[Image.Image], rel_thr: float = 0.25) -> tuple[
     return start, end
 
 
-def first_action_end(
-    frames: list[Image.Image], start: int, end: int, rise_factor: float = 1.25, min_gap: int = 2
-) -> int:
-    """在 ``[start, end]`` 内找**第一次**动作的结束帧。
+def _airborne_end(frames: list[Image.Image], start: int, end: int, tol: float = 6.0) -> int:
+    """腾空类(jump)的结束:脚线越过最高点后**首次回到地面**。
 
-    i2v 常在 5s 里把一次性动作**复读第二遍**(实测:提示词写了 "ONCE",兽人仍跳了两次),
-    直接取整个区间会把两次动作压进一套序列帧。
-
-    判据:以起始帧为参照算逐帧差异 ``dev``,取峰值后的**第一个谷底** —— 谷底=最接近
-    起始姿态的时刻(落回地面 / 收回戒备),谷底之后 ``dev`` 重新上升即第二次动作起手。
-    两个实测踩过的错解法:
-      - 看"帧间安静":会在**顶点悬停**处误触发,把动作截在半空;
-      - 看 dev 是否跌破峰值的固定比例:落地姿态与起始并不完全相同(实测谷底 10.4 vs
-        峰值 24.9),阈值定高了切不动、定低了又会误切,不如直接找谷底。
+    几何信号,明确无歧义 —— 比任何"能量安静"判据都稳。
     """
-    if end - start < 3:
+    y = foot_line_series(frames[start : end + 1])
+    if len(y) < 4:
         return end
-    ref = np.asarray(frames[start].convert("L").resize((64, 64)), dtype=np.float32)
-    dev = np.array(
-        [
-            np.abs(np.asarray(f.convert("L").resize((64, 64)), dtype=np.float32) - ref).mean()
-            for f in frames[start : end + 1]
-        ]
-    )
-    peak_i = int(np.argmax(dev))
-    valley_i, valley_v = peak_i, float(dev[peak_i])
-    for i in range(peak_i + 1, len(dev)):
-        if dev[i] < valley_v:
-            valley_i, valley_v = i, float(dev[i])
-        elif dev[i] > valley_v * rise_factor and i - valley_i >= min_gap:
-            return min(end, start + valley_i)      # 谷底=第一次动作收势
+    apex = int(np.argmin(y))
+    ground = float(np.median([y[0], y[-1]]))
+    back = np.flatnonzero(y[apex:] >= ground - tol)
+    return min(end, start + apex + int(back[0]) + 2) if len(back) else end
+
+
+def _swing_end(frames: list[Image.Image], start: int, end: int,
+               drop_ratio: float = 0.35, recover: int = 2) -> int:
+    """挥击类(attack/hit)的结束:能量越过峰值后**首次跌到峰值的 ``drop_ratio``**,再留收势余量。
+
+    挥击是"蓄力 → 峰值 → 收势"的单峰结构,收势很短,故用"跌破比例 + 固定余量"即可;
+    不要求长时间静止 —— 实测挥砍收势段的能量并不干净(视频压缩噪点),等不到静止平台。
+    """
+    e = _frame_energy(frames[start : end + 1])
+    if len(e) < 4:
+        return end
+    peak_i = int(np.argmax(e))
+    thr = float(e.max()) * drop_ratio
+    for i in range(peak_i + 1, len(e)):
+        if e[i] < thr:
+            return min(end, start + i + recover)
     return end
 
 
-def pick_oneshot(frames: list[Image.Image], n: int, first_only: bool = True) -> list[Image.Image]:
+def first_action_end(
+    frames: list[Image.Image], start: int, end: int, kind: str = "swing"
+) -> int:
+    """在 ``[start, end]`` 内找**第一次**动作的结束帧,按动作物理分流。
+
+    i2v 常在 5s 里把一次性动作**复读第二遍**(实测:提示词写了 "ONCE",兽人跳了两次、
+    挥砍也挥了两次),不裁会把两次动作压进一套序列帧。
+
+    不同动作的"结束"信号本质不同,**一个通用判据管不了两种**(实测踩过):
+      - ``kind="airborne"``(jump):脚线回到地面 —— 几何、无歧义。
+      - ``kind="swing"``(attack/hit):能量跌破峰值比例 + 收势余量。
+
+    三个已验证无效的通用解法(别再试):①只看"帧间安静" → 在跳跃**顶点悬停**处误触发,
+    把动作截在半空;②要求静止段足够长 → 挥砍收势并不干净(压缩噪点),等不到,完全不裁;
+    ③找"回到起始姿态"的谷底 → 收势姿态(戒备)与起始姿态(蓄力)不同,回不到低位。
+    """
+    if end - start < 4:
+        return end
+    return (_airborne_end if kind == "airborne" else _swing_end)(frames, start, end)
+
+
+def pick_oneshot(
+    frames: list[Image.Image], n: int, first_only: bool = True, kind: str = "swing"
+) -> list[Image.Image]:
     """一次性动作抽 ``n`` 帧:裁到动作区间 → 只留第一次动作 → 区间内均匀取(不闭环)。
 
     ``first_only`` 默认开:防 i2v 在 5s 内复读第二遍动作被一起抽进来。
+    ``kind``:``"airborne"``(jump,按脚线回地判结束)或 ``"swing"``(attack/hit,按能量跌破判)。
     """
     if len(frames) <= n:
         return frames
     start, end = find_motion_span(frames)
     if first_only:
-        end = max(start + 1, first_action_end(frames, start, end))
+        end = max(start + 1, first_action_end(frames, start, end, kind=kind))
     span = frames[start : end + 1]
     if len(span) <= n:
         return span
@@ -102,11 +124,27 @@ def pick_oneshot(frames: list[Image.Image], n: int, first_only: bool = True) -> 
     return [span[i] for i in idx]
 
 
+def _subject_rows(frame: Image.Image, alpha_thr: int = 128, bg_tol: int = 60) -> np.ndarray:
+    """主体所在的行下标。有真实 alpha 用 alpha;**全不透明帧**(原始视频帧)按四角背景色判。
+
+    必须兼容不透明帧:抽帧阶段拿到的是原始视频帧,还没抠图,只看 alpha 会把整幅当主体、
+    脚线恒定,导致腾空判据立刻误判"已落地"(实测踩过,跳跃被裁在起跳前)。
+    """
+    arr = np.asarray(frame.convert("RGBA"))
+    alpha = arr[:, :, 3]
+    if not alpha.min() > alpha_thr:
+        return np.where(alpha > alpha_thr)[0]
+    rgb = arr[:, :, :3].astype(np.int16)
+    corners = np.stack([rgb[0, 0], rgb[0, -1], rgb[-1, 0], rgb[-1, -1]])
+    bg = np.median(corners, axis=0)
+    return np.where(np.abs(rgb - bg).sum(axis=2) > bg_tol)[0]
+
+
 def foot_line_series(frames: list[Image.Image], alpha_thr: int = 128) -> np.ndarray:
     """逐帧主体**底边** y 坐标(脚线)。跳跃时脚线先降(蹲)、再升(腾空)、再落回。"""
     out = []
     for f in frames:
-        ys, _ = np.where(np.asarray(f.convert("RGBA"))[:, :, 3] > alpha_thr)
+        ys = _subject_rows(f, alpha_thr)
         out.append(float(ys.max()) if len(ys) else np.nan)
     arr = np.array(out, dtype=np.float32)
     if np.isnan(arr).any():                      # 空帧用邻近值补
