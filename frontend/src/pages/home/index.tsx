@@ -16,7 +16,7 @@ export function HomePage() {
               2D CHARACTER PRODUCTION WORKFLOW
             </p>
             <h1 className="mt-5 max-w-2xl font-serif text-[clamp(3.35rem,7vw,5.7rem)] font-medium leading-[0.98] tracking-[-0.065em]">
-              让你的角色，
+              让你的<span className="whitespace-nowrap">角色</span>，
               <br />
               真正登场。
             </h1>

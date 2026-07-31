@@ -3,7 +3,9 @@ import type {
   ActionType,
   Character,
   CharacterApis,
+  CreateCharacterActionInput,
   CreateCharacterInput,
+  CreateCharacterOutfitInput,
   Frame,
   Outfit,
 } from '@/entities'
@@ -93,6 +95,44 @@ function toOutfit(raw: BackendOutfit, characterId: string): Outfit {
   }
 }
 
+function toBackendFrame(frame: Frame, index: number) {
+  return {
+    index,
+    image_url: frame.imageUrl,
+    duration_ms: frame.durationMs,
+    root_motion: frame.rootMotion ? { dx: frame.rootMotion.dx, dy: frame.rootMotion.dy } : null,
+  }
+}
+
+function toBackendCreateAction(action: CreateCharacterActionInput) {
+  return {
+    id: action.id,
+    type: action.type,
+    name: action.name,
+    loop: action.loop ?? false,
+    fps: action.fps,
+    frame_count: action.frames.length,
+    frames: action.frames.map((frame, index) => toBackendFrame(frame, index)),
+  }
+}
+
+function toBackendCreateOutfit(outfit: CreateCharacterOutfitInput) {
+  return {
+    id: outfit.id,
+    name: outfit.name,
+    description: outfit.description ?? null,
+    preview_url: outfit.previewUrl ?? null,
+    actions: (outfit.actions ?? []).map(toBackendCreateAction),
+  }
+}
+
+function toBackendCharacterData(characterData: { outfits: CreateCharacterOutfitInput[] }) {
+  return {
+    version: 1,
+    outfits: characterData.outfits.map(toBackendCreateOutfit),
+  }
+}
+
 function toCharacter(raw: BackendCharacter): Character {
   const id = String(raw.id)
   return {
@@ -132,6 +172,8 @@ export function createCharacterApis(): CharacterApis {
         project_id: Number(input.projectId),
         description: input.description,
         reference_image_url: input.referenceImageUrl ?? null,
+        // 仅当调用方随带初始造型/动作数据时才发送 character_data;缺省时保持既有行为不变。
+        ...(input.characterData ? { character_data: toBackendCharacterData(input.characterData) } : {}),
       })
       return toCharacter(raw)
     },
@@ -152,11 +194,7 @@ export function createCharacterApis(): CharacterApis {
               loop: false,
               fps: action.fps,
               frame_count: action.frames.length,
-              frames: action.frames.map((frame, index) => ({
-                index,
-                image_url: frame.imageUrl,
-                duration_ms: frame.durationMs,
-              })),
+              frames: action.frames.map((frame, index) => toBackendFrame(frame, index)),
             })),
           })),
         },

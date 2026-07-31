@@ -117,12 +117,36 @@ export interface Character {
   updatedAt: string
 }
 
+/** 创建角色时可选随带写入的动作，例如生成流程里已产出的完整帧序列。 */
+export interface CreateCharacterActionInput {
+  id: string
+  type: ActionType
+  name: string
+  loop?: boolean
+  fps: number
+  frames: Frame[]
+}
+
+/** 创建角色时可选随带写入的造型；省略字段按后端默认值处理。 */
+export interface CreateCharacterOutfitInput {
+  id: string
+  name: string
+  description?: string | null
+  previewUrl?: string | null
+  actions?: CreateCharacterActionInput[]
+}
+
 /** 创建角色并发起母版生成所需的入参。 */
 export interface CreateCharacterInput {
   projectId: string
   /** 交给模型生成母版。 */
   description: string
   referenceImageUrl?: string | null
+  /**
+   * 可选：创建的同时写入初始 character_data(如快速创建流程已生成好的造型/动作)。
+   * 省略时后端 character_data 为空,与既有行为一致。
+   */
+  characterData?: { outfits: CreateCharacterOutfitInput[] }
 }
 
 /**

@@ -9,6 +9,12 @@ import {
   type WorkflowStep,
   type WorkflowStepType,
 } from '@/entities'
+import type {
+  ActionProgress,
+  QuickCreateHandle,
+  QuickCreateOrchestrator,
+  QuickCreateState,
+} from '@/features/quick-create/orchestrator'
 import { unavailableQuickStartService, type QuickStartService } from './service'
 
 export type {
@@ -43,32 +49,58 @@ export interface QuickStartPageProps {
   /**
    * 页面测试与后续生产组合可以注入同一份服务实例。
    * 默认实现明确不可用，直到真实 Project / Generation / Task 实现到位。
+   * 仅在恢复历史运行记录（/quick-start/:runId）时仍走这条旧的 workflow 路径。
    */
   service?: QuickStartService
+  /**
+   * quick-create 编排器。存在时，「开始生成」直接驱动这条精简自动管线并在页内展示进度，
+   * 完成后跳转 /playtest/:characterId/:outfitId，而不再进入 workflow-controller。
+   */
+  orchestrator?: QuickCreateOrchestrator
 }
 
 /** Quick Start 独立完成 AI 入口；它不跳转 Workflow Editor。 */
-export function QuickStartPage({ service = unavailableQuickStartService }: QuickStartPageProps) {
+export function QuickStartPage({
+  service = unavailableQuickStartService,
+  orchestrator,
+}: QuickStartPageProps) {
   const { runId } = useParams()
+  // orchestrator 的运行句柄只存在于内存中（不按 runId 持久化），因此在本组件内直接持有。
+  const [handle, setHandle] = useState<QuickCreateHandle | null>(null)
 
-  return runId ? (
-    <QuickStartRun service={service} runId={runId} />
-  ) : (
-    <QuickStartInput service={service} />
+  if (runId) return <QuickStartRun service={service} runId={runId} />
+  if (handle) return <QuickCreateProgress handle={handle} onRestart={() => setHandle(null)} />
+  return (
+    <QuickStartInput service={service} orchestrator={orchestrator} onStarted={setHandle} />
   )
 }
 
-function QuickStartInput({ service }: { service: QuickStartService }) {
+function QuickStartInput({
+  service,
+  orchestrator,
+  onStarted,
+}: {
+  service: QuickStartService
+  orchestrator?: QuickCreateOrchestrator
+  onStarted: (handle: QuickCreateHandle) => void
+}) {
   const navigate = useNavigate()
   const [prompt, setPrompt] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const unavailableReason = service.unavailableReason
+  // 有编排器时入口始终可用；只有旧的 service 路径才可能给出「未配置」原因。
+  const unavailableReason = orchestrator ? null : service.unavailableReason
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const normalizedPrompt = prompt.trim()
     if (!normalizedPrompt || submitting || unavailableReason) return
+
+    // 优先走 quick-create 编排器：立刻拿到句柄、页内展示进度，不阻塞、不跳 runId。
+    if (orchestrator) {
+      onStarted(orchestrator.start(normalizedPrompt))
+      return
+    }
 
     setSubmitting(true)
     setError(null)
@@ -408,6 +440,266 @@ function QuickStartRun({ service, runId }: { service: QuickStartService; runId: 
           {status.error ? (
             <p role="alert" className="mt-3 text-sm text-[#8b332a]">
               {status.error}
+            </p>
+          ) : null}
+        </footer>
+      </div>
+    </section>
+  )
+}
+
+/* ─── quick-create 编排器进度视图（C8 / G9） ─── */
+
+/** 订阅编排器句柄：先取初值，再追后续相位变化。 */
+function useQuickCreateState(handle: QuickCreateHandle): QuickCreateState {
+  const [state, setState] = useState<QuickCreateState>(() => handle.getState())
+  useEffect(() => {
+    // 句柄可能在 effect 挂载前已推进，先同步一次当前值再订阅。
+    setState(handle.getState())
+    return handle.subscribe(setState)
+  }, [handle])
+  return state
+}
+
+/** done 后停留展示「完成」的时长（毫秒），随后自动进入试玩。 */
+const AUTO_NAV_DELAY_MS = 1200
+
+/**
+ * 五个主相位步骤。每步的 done 判据尽量从状态字段推导（而非仅看当前 phase），
+ * 这样即便失败态覆盖了工作相位，已完成的步骤仍能正确显示为完成。
+ */
+const PROGRESS_STEPS: { label: string; done: (state: QuickCreateState) => boolean }[] = [
+  { label: '建项目', done: (s) => s.projectId != null },
+  { label: '生成角色图', done: (s) => s.masterImageUrl != null },
+  { label: '创建角色', done: (s) => s.characterId != null },
+  {
+    label: '生成动作（idle + walk）',
+    done: (s) =>
+      s.phase === 'saving' ||
+      s.phase === 'done' ||
+      (s.actions.length > 0 && s.actions.every((a) => a.status === 'completed')),
+  },
+  { label: '保存', done: (s) => s.phase === 'done' },
+]
+
+type StepStatus = 'done' | 'active' | 'failed' | 'pending'
+
+function actionStatusLabel(action: ActionProgress): string {
+  switch (action.status) {
+    case 'running':
+      return '生成中'
+    case 'completed':
+      return '完成'
+    case 'failed':
+      return '失败'
+    default:
+      return '等待'
+  }
+}
+
+function QuickCreateProgress({
+  handle,
+  onRestart,
+}: {
+  handle: QuickCreateHandle
+  onRestart: () => void
+}) {
+  const navigate = useNavigate()
+  const state = useQuickCreateState(handle)
+  const { phase, characterId, outfitId, message } = state
+
+  // 完成后停留一小会儿让用户看到「完成」，再自动进入试玩。
+  useEffect(() => {
+    if (phase !== 'done' || characterId == null || !outfitId) return
+    const timer = setTimeout(() => {
+      navigate(`/playtest/${characterId}/${outfitId}`)
+    }, AUTO_NAV_DELAY_MS)
+    return () => clearTimeout(timer)
+  }, [phase, characterId, outfitId, navigate])
+
+  // 第一个尚未完成的步骤即为当前步；全部完成时 currentIndex 越界（= 长度）。
+  const currentIndex = PROGRESS_STEPS.findIndex((step) => !step.done(state))
+  const failed = phase === 'failed'
+
+  const stepStatus = (index: number): StepStatus => {
+    if (PROGRESS_STEPS[index].done(state)) return 'done'
+    if (index === currentIndex) return failed ? 'failed' : 'active'
+    return 'pending'
+  }
+
+  const headline = failed
+    ? '生成失败'
+    : phase === 'done'
+      ? '角色已就绪'
+      : '正在自动生成角色…'
+  const doneCount = PROGRESS_STEPS.filter((step) => step.done(state)).length
+
+  return (
+    <section className="relative min-h-[640px] overflow-hidden rounded-[2rem] border border-[#c9d0ca] bg-[#e3e7e2] text-[#171817] shadow-[0_26px_80px_rgba(31,43,35,0.10)]">
+      <AmbientGrid />
+      <div className="relative z-10 grid min-h-[640px] grid-rows-[auto_1fr_auto] gap-6 p-5 sm:p-8">
+        <header className="flex flex-wrap items-start justify-between gap-4">
+          <div>
+            <p className="font-mono text-[10px] font-bold tracking-[0.16em] text-[#687069]">
+              QUICK START / AUTO CREATE
+            </p>
+            <h1 className="mt-2 font-serif text-3xl tracking-[-0.03em] sm:text-4xl">{headline}</h1>
+          </div>
+          <div
+            className="flex items-center gap-3 rounded-xl border border-[#c4cbc5] bg-[#f7f8f4]/90 px-4 py-3"
+            aria-live="polite"
+          >
+            <i
+              className={`h-2.5 w-2.5 rounded-full ${
+                failed
+                  ? 'bg-[#8b332a]'
+                  : phase === 'done'
+                    ? 'bg-[#35583f]'
+                    : 'animate-pulse bg-[#4f7b5b]'
+              } motion-reduce:animate-none`}
+              aria-hidden="true"
+            />
+            <span>
+              <small className="block font-mono text-[8px] tracking-[0.12em] text-[#747973]">
+                CURRENT STATUS
+              </small>
+              <b className="text-sm text-[#35583f]">{headline}</b>
+            </span>
+          </div>
+        </header>
+
+        <div className="grid min-h-0 gap-5 lg:grid-cols-[1.35fr_0.65fr]">
+          <section className="grid min-h-[340px] place-items-center overflow-hidden rounded-[1.4rem] border border-[#c4cbc5] bg-[#eef1ed]/90 p-5">
+            {state.masterImageUrl ? (
+              <figure className="grid place-items-center gap-3">
+                <img
+                  src={state.masterImageUrl}
+                  alt="角色母版图"
+                  className="aspect-square w-56 rounded-xl border border-[#c7cec8] bg-[#e7ebe6] object-contain p-3 [image-rendering:pixelated]"
+                />
+                <figcaption className="font-mono text-[9px] tracking-[0.1em] text-[#687069]">
+                  MASTER SPRITE
+                </figcaption>
+              </figure>
+            ) : (
+              <div className="grid place-items-center gap-5 text-center">
+                <div className="relative grid h-44 w-44 place-items-center rounded-[1.4rem] border border-dashed border-[#aeb9b0] bg-[#e5e9e4]">
+                  <i className="h-12 w-12 animate-pulse rounded-full border border-[#819184] bg-[#d5ddd6] shadow-[0_0_0_16px_rgba(53,88,63,0.05)] motion-reduce:animate-none" />
+                </div>
+                <span>
+                  <b className="block text-base text-[#354039]">{headline}</b>
+                  <small className="mt-2 block max-w-md leading-6 text-[#687069]">
+                    正在自动完成建项目、生成角色图、创建角色与动作，请稍候。
+                  </small>
+                </span>
+              </div>
+            )}
+          </section>
+
+          <aside className="rounded-[1.4rem] border border-[#c4cbc5] bg-[#f7f8f4]/95 p-5">
+            <p className="font-mono text-[9px] font-bold tracking-[0.13em] text-[#747973]">
+              PIPELINE
+            </p>
+            <h2 className="mt-2 text-lg font-semibold">生成进度</h2>
+            <p className="mt-2 text-xs leading-6 text-[#687069]">
+              一句提示词自动跑完整条管线，无需人工挑选候选。
+            </p>
+
+            <ol className="mt-5 grid gap-2">
+              {PROGRESS_STEPS.map((step, index) => {
+                const status = stepStatus(index)
+                return (
+                  <li
+                    key={step.label}
+                    className={`grid grid-cols-[28px_1fr_auto] items-center gap-3 rounded-lg border px-3 py-2 ${
+                      status === 'active'
+                        ? 'border-[#91a394] bg-[#e4ebe2]'
+                        : status === 'failed'
+                          ? 'border-[#d6a49d] bg-[#f3e4e1]'
+                          : 'border-[#d5dad5] bg-[#f0f2ef]'
+                    }`}
+                  >
+                    <i
+                      className={`grid h-7 w-7 place-items-center rounded-full text-[9px] not-italic ${
+                        status === 'done'
+                          ? 'bg-[#35583f] text-white'
+                          : status === 'active'
+                            ? 'border border-[#6f8874] text-[#35583f]'
+                            : status === 'failed'
+                              ? 'bg-[#8b332a] text-white'
+                              : 'border border-[#d0d6d1] text-[#8b918c]'
+                      }`}
+                    >
+                      {status === 'done' ? '✓' : status === 'failed' ? '×' : String(index + 1).padStart(2, '0')}
+                    </i>
+                    <span className="text-xs font-semibold text-[#515a53]">{step.label}</span>
+                    <small className="text-[9px] text-[#7a817b]">
+                      {status === 'done'
+                        ? '完成'
+                        : status === 'active'
+                          ? '进行中'
+                          : status === 'failed'
+                            ? '失败'
+                            : '等待'}
+                    </small>
+                  </li>
+                )
+              })}
+            </ol>
+
+            {state.actions.length ? (
+              <ul className="mt-4 grid gap-1.5 rounded-lg border border-[#d5dad5] bg-[#f0f2ef] p-3">
+                {state.actions.map((action) => (
+                  <li
+                    key={action.actionType}
+                    className="flex items-center justify-between text-[11px] text-[#515a53]"
+                  >
+                    <span className="font-medium">{action.name}</span>
+                    <span className="font-mono text-[9px] tracking-[0.08em] text-[#7a817b]">
+                      {actionStatusLabel(action)}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+          </aside>
+        </div>
+
+        <footer className="rounded-[1.3rem] border border-[#c4cbc5] bg-[#f7f8f4]/95 p-4 shadow-[0_18px_50px_rgba(31,43,35,0.10)]">
+          <div className="flex flex-wrap items-center justify-between gap-4">
+            <span>
+              <small className="font-mono text-[8px] tracking-[0.12em] text-[#747973]">
+                {doneCount} / {PROGRESS_STEPS.length} STEPS DONE
+              </small>
+              <b className="mt-1 block text-sm text-[#354039]">{headline}</b>
+            </span>
+            <div className="flex flex-wrap gap-2">
+              {phase === 'done' && characterId != null && outfitId ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/playtest/${characterId}/${outfitId}`)}
+                  className="rounded-xl bg-[#35583f] px-5 py-2 text-xs font-semibold text-white transition hover:bg-[#456c51]"
+                >
+                  进入试玩
+                </button>
+              ) : null}
+              {failed ? (
+                <button
+                  type="button"
+                  onClick={onRestart}
+                  className="rounded-xl bg-[#35583f] px-4 py-2 text-xs font-semibold text-white"
+                >
+                  新建一次创作
+                </button>
+              ) : null}
+            </div>
+          </div>
+          {phase === 'done' ? (
+            <p className="mt-3 text-xs text-[#687069]">即将自动进入试玩页…</p>
+          ) : null}
+          {failed && message ? (
+            <p role="alert" className="mt-3 text-sm text-[#8b332a]">
+              {message}
             </p>
           ) : null}
         </footer>

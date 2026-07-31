@@ -1,6 +1,8 @@
 import { BrowserRouter, Route, Routes } from 'react-router'
 
 import { createWorkflowRunStore } from '@/entities'
+import { createQuickCreateOrchestrator } from '@/features/quick-create/orchestrator'
+import * as backendClient from '@/features/quick-create/backend-client'
 import { createWorkflowController } from '@/features/workflow-controller'
 import { HomePage } from '@/pages/home'
 import { HistoryPage } from '@/pages/history'
@@ -58,6 +60,20 @@ const quickStartService = createQuickStartService({
   prepareProject: prepareQuickStartProject,
 })
 
+/**
+ * Quick-create 编排器：一句话 prompt → 建项目 → 生成母版图 → 建角色 →
+ * 并行生成 idle/walk → 回写 → 可试玩。它绕开 8 步 workflow-controller，
+ * 直接经两个生成端点与 /characters 完成整条自动管线。
+ *
+ * 与 workflowController 一样必须是模块级稳定单例，避免组件渲染期重复构造丢状态。
+ * createWorkflowController 保持不变（workflow-editor 仍在用它）。
+ */
+const quickCreateOrchestrator = createQuickCreateOrchestrator({
+  projectApis,
+  characterApis,
+  backendClient,
+})
+
 const playtestApis: PlaytestPageApis = { characters: characterApis }
 
 /**
@@ -70,10 +86,10 @@ export function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<HomePage />} />
-          <Route path="/quick-start" element={<QuickStartPage service={quickStartService} />} />
+          <Route path="/quick-start" element={<QuickStartPage service={quickStartService} orchestrator={quickCreateOrchestrator} />} />
           <Route
             path="/quick-start/:runId"
-            element={<QuickStartPage service={quickStartService} />}
+            element={<QuickStartPage service={quickStartService} orchestrator={quickCreateOrchestrator} />}
           />
           <Route path="/projects" element={<ProjectsPage />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />

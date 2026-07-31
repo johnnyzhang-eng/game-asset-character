@@ -56,7 +56,11 @@ export function HomeChoiceCard({
       </span>
 
       <span className="relative mt-auto block pt-12">
-        <strong className="block font-serif text-2xl font-medium tracking-[-0.025em]">
+        <strong
+          className={`block font-serif text-2xl font-medium tracking-[-0.025em] ${
+            dark ? 'text-white' : 'text-[#191b18]'
+          }`}
+        >
           {title}
         </strong>
         <span
