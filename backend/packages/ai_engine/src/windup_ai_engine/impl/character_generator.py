@@ -71,7 +71,9 @@ class CharacterGenerator(CharacterGeneratorPort):
         frames = strategy.derive(card, action, master, progress)
 
         # ③ 最后一公里:脚线对齐成原地序列帧 + 抽 root motion 轨道
-        frames, root_motion = self._lastmile(frames, progress, stylize=action.stylize)
+        frames, root_motion = self._lastmile(
+            frames, progress, stylize=action.stylize, action_name=action.action.value
+        )
 
         # ④ 出参:帧 + 逐帧时长 + root motion(上传 / 落库在 server 侧)
         progress.step("package", 2, 3, f"{len(frames)} 帧 + 时长 + root motion")
@@ -83,7 +85,8 @@ class CharacterGenerator(CharacterGeneratorPort):
         )
 
     def _lastmile(
-        self, frames: list[bytes], progress: ProgressPort, stylize: str = "none"
+        self, frames: list[bytes], progress: ProgressPort,
+        stylize: str = "none", action_name: str = "",
     ) -> tuple[list[bytes], list[tuple[int, int]]]:
         """脚线对齐成原地序列帧(消除逐帧画布漂移,#21)+ 抽 root motion 位移轨道(#63)。
 
@@ -113,6 +116,17 @@ class CharacterGenerator(CharacterGeneratorPort):
             (int(round(dx * _scale)), int(round(dy * _scale)))
             for dx, dy in extract_root_motion(imgs)
         ]
+        # i2v 的循环走/跑常是**原地**(角色不横移)→ 抽出的 dx≈0,引擎侧不会移动。
+        # 检测到原地时,按角色本体高合成标准步幅(walk≈0.95、run≈1.9 身高/周期,朝右为正)。
+        if action_name in ("walk", "run") and len(root_motion) > 1:
+            body = self._align_cell * _fill
+            span = abs(root_motion[-1][0] - root_motion[0][0])
+            if span < 0.25 * body:
+                stride = (0.95 if action_name == "walk" else 1.9) * body
+                n = len(root_motion)
+                root_motion = [
+                    (int(round(i / (n - 1) * stride)), root_motion[i][1]) for i in range(n)
+                ]
         # 插画风 LANCZOS 保清晰;像素画 NEAREST 保像素边(pixelate 已吸附网格)。
         from PIL import Image as _Image
         resample = _Image.NEAREST if stylize == "pixel" else _Image.LANCZOS

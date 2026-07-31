@@ -107,7 +107,7 @@ const MVP_ACTIONS: { actionType: ActionType; name: string; loop: boolean }[] = [
 ]
 
 /** 母版尺寸；必须与建项目时的 spriteSize 一致，否则后端 _validate_project_size 会 400（G1）。 */
-const SPRITE_SIZE = 256
+const SPRITE_SIZE = 512
 
 /** 每个动作生成的帧数；测试期压到 8 以省视频成本/时长。 */
 const NUM_FRAMES = 8
@@ -220,7 +220,7 @@ export function createQuickCreateOrchestrator(
         // ── 步骤 1：建项目（256×256）
         setState({ phase: 'preparing-project' })
         const project = await projectApis.create({
-          name: prompt.slice(0, 24).trim() || '快速创建',
+          name: prompt.slice(0, 18).trim() || '快速创建', // 后端 project_name ≤20 字符
           perspective: 'side',
           directionalMovement: 'single',
           spriteSize: { width: SPRITE_SIZE, height: SPRITE_SIZE },

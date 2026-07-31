@@ -42,6 +42,11 @@ export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   const envelope = (await response.json()) as ApiEnvelope<T>
+  // 后端统一信封 HTTP 恒 200,错误码在 body.code——必须检查,否则会把校验失败的
+  // 错误 data 当成功返回(实测:project_name 超长返回 code=400 但 HTTP 200)。
+  if (envelope.code !== undefined && envelope.code !== 200 && envelope.code !== 0) {
+    throw new ApiError(response.status, envelope.code, envelope.message ?? '请求失败')
+  }
   return envelope.data
 }
 

@@ -89,12 +89,12 @@ def main() -> None:
     }]}
 
     with SessionLocal() as session:
-        project = Project(user_id=1, name="xed 3D 演示", character_perspective=1,
+        project = Project(user_id=1, project_name="xed-3D演示", character_perspective=1,
                           directional_movement=1, sprite_width=SPRITE, sprite_height=SPRITE,
                           game_style="3D-rendered clay, side view")
         session.add(project); session.flush()
         project_id = project.id
-        character = Character(user_id=1, project_id=project_id,
+        character = Character(project_id=project_id,
                               description="xed —— 3D 建模渲染的 2D 角色,带真实 root motion",
                               reference_image_url=preview, character_data=character_data, status=1)
         session.add(character); session.flush()

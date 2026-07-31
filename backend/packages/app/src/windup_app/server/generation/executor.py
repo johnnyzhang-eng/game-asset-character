@@ -236,11 +236,12 @@ class ActionTaskExecutor:
             matte = OnnxU2NetMatteProvider()
             video = SufyVideoProvider()
             image = SufyImageProvider()
+            # align_cell=512:帧原生 512 生成,避免小画布 + 事后上采样糊(高清)。
             self._generator = CharacterGenerator({
                 GenRoute.VIDEO_I2V: VideoFrameStrategy(video, matte),
                 GenRoute.PER_FRAME: PerFrameStrategy(image, matte),
                 GenRoute.PROC_IDLE: ProcIdleStrategy(image, matte),
-            })
+            }, align_cell=512)
         return self._generator
 
     def _download_master(self, input: CharacterActionInput) -> bytes:
