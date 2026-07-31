@@ -138,6 +138,8 @@ function toCharacter(raw: BackendCharacter): Character {
   return {
     id,
     projectId: String(raw.project_id),
+    description: raw.description,
+    referenceImageUrl: raw.reference_image_url,
     createdAt: '', // 后端列表不返回时间戳
     updatedAt: '',
     outfits: (raw.character_data?.outfits ?? []).map((o) => toOutfit(o, id)),

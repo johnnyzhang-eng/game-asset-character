@@ -113,6 +113,13 @@ export interface Character {
   projectId: string
   /** 角色的全部独立造型；MVP 页面至少保留这一层，即使当前只有一个成员。 */
   outfits: Outfit[]
+  /**
+   * 角色文案描述（后端 description）。列表/选择器用于展示；生成树本身不依赖它，
+   * 因此可选——按 ID 读取的完整角色可能不带此字段。
+   */
+  description?: string | null
+  /** 角色参考图 URL（后端 reference_image_url）；用作选择器缩略图回退。可选，理由同上。 */
+  referenceImageUrl?: string | null
   createdAt: string
   updatedAt: string
 }

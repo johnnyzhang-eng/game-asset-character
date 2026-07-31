@@ -10,7 +10,7 @@ import { NotFoundPage } from '@/pages/not-found'
 import { PlaytestDemoPage } from '@/pages/playtest/demo-page'
 import { PlaytestPage, type PlaytestPageApis } from '@/pages/playtest'
 import { ProjectDetailPage } from '@/pages/project-detail'
-import { ProjectsPage } from '@/pages/projects'
+import { ProjectsPage, type CharacterSelectorApis } from '@/pages/projects'
 import { QuickStartPage, type PrepareQuickStartProject } from '@/pages/quick-start'
 import { createQuickStartService } from '@/pages/quick-start/service'
 import { WorkflowEditorPage } from '@/pages/workflow-editor'
@@ -77,6 +77,15 @@ const quickCreateOrchestrator = createQuickCreateOrchestrator({
 const playtestApis: PlaytestPageApis = { characters: characterApis }
 
 /**
+ * 角色选择器同时需要项目与角色适配器：后端没有「列出全部角色」端点，
+ * 页面先列项目再按项目列角色汇聚成网格。
+ */
+const characterSelectorApis: CharacterSelectorApis = {
+  projects: projectApis,
+  characters: characterApis,
+}
+
+/**
  * 路由表与全局外壳。
  * app 层注入后端适配器与页面服务，使各页面接入真实后端而非「尚未配置」占位实现。
  */
@@ -91,7 +100,7 @@ export function App() {
             path="/quick-start/:runId"
             element={<QuickStartPage service={quickStartService} orchestrator={quickCreateOrchestrator} />}
           />
-          <Route path="/projects" element={<ProjectsPage />} />
+          <Route path="/projects" element={<ProjectsPage apis={characterSelectorApis} />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/projects/:projectId/history" element={<HistoryPage />} />
           <Route path="/workflow-editor/:runId" element={<WorkflowEditorPage />} />
