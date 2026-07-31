@@ -36,8 +36,20 @@ def _img(png: bytes) -> Image.Image:
 class CharacterGenerator(CharacterGeneratorPort):
     """由 bootstrap 注入 {GenRoute: DerivationStrategy} 装配表。"""
 
-    def __init__(self, strategies: dict[GenRoute, DerivationStrategy]) -> None:
+    def __init__(
+        self,
+        strategies: dict[GenRoute, DerivationStrategy],
+        *,
+        align_cell: int = 256,
+        ref_height: float | None = None,
+    ) -> None:
+        """``align_cell``:对齐画布边长——插画风想要高清演示可传 512(角色不再被压到
+        ~159px);游戏原生 256 精灵用默认。``ref_height``:跨动作**统一定标高**(站立姿态
+        像素高)——多动作共用一张母版时传同一值,攻击举剑/跳跃蹲姿就不会各自缩放到不同大小。
+        """
         self._by_route = strategies
+        self._align_cell = align_cell
+        self._ref_height = ref_height
 
     def generate(
         self,
@@ -55,7 +67,7 @@ class CharacterGenerator(CharacterGeneratorPort):
         frames = strategy.derive(card, action, master, progress)
 
         # ③ 最后一公里:脚线对齐成原地序列帧
-        frames = self._lastmile(frames, progress)
+        frames = self._lastmile(frames, progress, stylize=action.stylize)
 
         # ④ 出参:帧 + 逐帧时长(上传 / 落库在 server 侧)
         progress.step("package", 2, 3, f"{len(frames)} 帧 + 逐帧时长")
@@ -65,7 +77,9 @@ class CharacterGenerator(CharacterGeneratorPort):
             fps=action.fps,
         )
 
-    def _lastmile(self, frames: list[bytes], progress: ProgressPort) -> list[bytes]:
+    def _lastmile(
+        self, frames: list[bytes], progress: ProgressPort, stylize: str = "none"
+    ) -> list[bytes]:
         """脚线对齐:把各帧对齐成原地序列帧(消除逐帧画布漂移,Issue #21)。
 
         位移轨道(root_motion)MVP 先不做(见 #63 / character_data.frames 暂无该字段):
@@ -75,14 +89,22 @@ class CharacterGenerator(CharacterGeneratorPort):
         if not frames or not all(frames):   # 含空桩帧(未开发路线)→ 跳过
             return frames
         imgs = [_img(f) for f in frames]
-        # 参考姿态高 = 各帧包围盒高的中位数:比"最高帧"稳(不被举过头顶的武器带偏),
-        # 各动作都以自身中位姿态定标,本体尺寸跨动作一致。
+        # 定标高:优先用注入的**统一 ref_height**(跨动作同尺寸);否则回退各帧包围盒高的
+        # 中位数(比"最高帧"稳,不被举过头顶的武器带偏)。
         import numpy as _np
-        _hs = []
-        for _im in imgs:
-            _ys, _ = _np.where(_np.asarray(_im)[:, :, 3] > 128)
-            if len(_ys):
-                _hs.append(float(_ys.max() - _ys.min()))
-        aligned = align_bottom_center(imgs, ref_height=(float(_np.median(_hs)) if _hs else None))
+        ref = self._ref_height
+        if ref is None:
+            _hs = []
+            for _im in imgs:
+                _ys, _ = _np.where(_np.asarray(_im)[:, :, 3] > 128)
+                if len(_ys):
+                    _hs.append(float(_ys.max() - _ys.min()))
+            ref = float(_np.median(_hs)) if _hs else None
+        # 插画风 LANCZOS 保清晰;像素画 NEAREST 保像素边(pixelate 已吸附网格)。
+        from PIL import Image as _Image
+        resample = _Image.NEAREST if stylize == "pixel" else _Image.LANCZOS
+        aligned = align_bottom_center(
+            imgs, cell=self._align_cell, ref_height=ref, resample=resample
+        )
         # TODO(dev, #21): tail_match 循环闭合(净位移动作先锚点再匹配帧)
         return [_png(im) for im in aligned]
