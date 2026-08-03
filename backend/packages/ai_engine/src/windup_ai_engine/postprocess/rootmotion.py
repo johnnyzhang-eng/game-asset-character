@@ -21,7 +21,7 @@ __all__ = ["extract_root_motion", "frame_durations", "DEFAULT_FPS_MS"]
 
 # 各动作的基准单帧时长(ms),取业界常用区间的中值。
 DEFAULT_FPS_MS = {
-    "idle": 450,
+    "idle": 300,
     "walk": 125,
     "run": 90,
     "jump": 110,
