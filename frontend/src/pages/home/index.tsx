@@ -1,3 +1,4 @@
+import { HomeBrandBird } from './brand-bird'
 import { HomeChoiceCard } from './choice-card'
 
 /** 根入口只负责提供两种制作入口，不持有工作流业务状态。 */
@@ -9,7 +10,9 @@ export function HomePage() {
         className="absolute inset-x-0 top-0 h-px bg-gradient-to-r from-transparent via-white to-transparent"
       />
 
-      <section className="mx-auto grid min-h-screen max-w-5xl gap-10 px-6 py-10 lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,0.95fr)] lg:items-center lg:py-14">
+      <HomeBrandBird />
+
+      <section className="relative z-10 mx-auto grid min-h-screen max-w-5xl gap-10 px-6 py-10 lg:grid-cols-[minmax(0,1.05fr)_minmax(22rem,0.95fr)] lg:items-center lg:py-14">
         <div className="flex h-full min-h-[32rem] flex-col justify-between py-1">
           <div>
             <p className="mt-14 font-mono text-[10px] font-semibold tracking-[0.16em] text-[#747973]">

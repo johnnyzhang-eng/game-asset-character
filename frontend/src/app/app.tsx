@@ -4,6 +4,7 @@ import { createWorkflowRunStore } from '@/entities'
 import { createQuickCreateOrchestrator } from '@/features/quick-create/orchestrator'
 import * as backendClient from '@/features/quick-create/backend-client'
 import { createWorkflowController } from '@/features/workflow-controller'
+import { Create3dPage } from '@/pages/create-3d'
 import { HomePage } from '@/pages/home'
 import { HistoryPage } from '@/pages/history'
 import { NotFoundPage } from '@/pages/not-found'
@@ -100,6 +101,7 @@ export function App() {
             path="/quick-start/:runId"
             element={<QuickStartPage service={quickStartService} orchestrator={quickCreateOrchestrator} />}
           />
+          <Route path="/create-3d" element={<Create3dPage />} />
           <Route path="/projects" element={<ProjectsPage apis={characterSelectorApis} />} />
           <Route path="/projects/:projectId" element={<ProjectDetailPage />} />
           <Route path="/projects/:projectId/history" element={<HistoryPage />} />

@@ -20,6 +20,12 @@ const productNavigation: ProductNavigationItem[] = [
     isActive: (pathname) => pathname.startsWith('/projects') || pathname.startsWith('/playtest'),
   },
   {
+    to: '/create-3d',
+    label: '3D 角色',
+    compactLabel: '3D',
+    isActive: (pathname) => pathname.startsWith('/create-3d'),
+  },
+  {
     to: '/quick-start',
     label: '创作',
     isActive: (pathname) =>
@@ -28,6 +34,10 @@ const productNavigation: ProductNavigationItem[] = [
 ]
 
 function getWorkspaceLabel(pathname: string): { title: string; detail: string } {
+  if (pathname.startsWith('/create-3d')) {
+    return { title: '3D 角色', detail: '生成、审核与套用动作' }
+  }
+
   if (pathname.startsWith('/projects') || pathname.startsWith('/playtest')) {
     return { title: '项目资产', detail: '角色、造型与动作' }
   }

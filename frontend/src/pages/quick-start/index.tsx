@@ -15,7 +15,10 @@ import type {
   QuickCreateOrchestrator,
   QuickCreateState,
 } from '@/features/quick-create/orchestrator'
+import { AmbientGrid } from '@/shared/ui/ambient-grid'
 import { unavailableQuickStartService, type QuickStartService } from './service'
+import { DynamicPixelField } from './dynamic-pixel-field'
+import './quick-start.css'
 
 export type {
   CreateQuickStartServiceOptions,
@@ -35,14 +38,12 @@ const STEP_LABELS: Record<WorkflowStepType, string> = {
 }
 
 const EXAMPLES = [
-  {
-    label: '像素守夜人',
-    prompt: '一位提着风灯、披深色斗篷的像素守夜人',
-  },
-  {
-    label: '轻装信使',
-    prompt: '轻装信使，侧视像素风，轮廓清晰，动作轻快',
-  },
+  '一位提着风灯、披深色斗篷的像素守夜人',
+  '穿轻甲的荒原信使，侧视像素风，动作轻快',
+  '来自雾港的机械修补师，黄铜义肢沾着机油',
+  '背着药草箱的森林巡医，披一件苔绿色短斗篷',
+  '手持折扇的月下剑客，银白长发随步伐轻摆',
+  '戴旧飞行帽的云海邮差，腰间挂着蓝色信筒',
 ] as const
 
 export interface QuickStartPageProps {
@@ -86,10 +87,20 @@ function QuickStartInput({
 }) {
   const navigate = useNavigate()
   const [prompt, setPrompt] = useState('')
+  const [suggestionIndex, setSuggestionIndex] = useState(0)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // 有编排器时入口始终可用；只有旧的 service 路径才可能给出「未配置」原因。
   const unavailableReason = orchestrator ? null : service.unavailableReason
+  const suggestion = EXAMPLES[suggestionIndex]
+
+  // 轮播提示语：每 3 秒切一条预置角色设定。
+  useEffect(() => {
+    const intervalId = window.setInterval(() => {
+      setSuggestionIndex((current) => (current + 1) % EXAMPLES.length)
+    }, 3000)
+    return () => window.clearInterval(intervalId)
+  }, [])
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -119,7 +130,7 @@ function QuickStartInput({
       <AmbientGrid />
 
       <div className="relative z-10 grid min-h-[640px] grid-rows-[auto_1fr_auto] p-5 sm:p-8">
-        <header className="flex items-start justify-between gap-6">
+        <header>
           <div>
             <p className="font-mono text-[10px] font-bold tracking-[0.16em] text-[#687069]">
               QUICK START / CREATE CHARACTER
@@ -130,58 +141,28 @@ function QuickStartInput({
               开始一条可追踪的制作流程。
             </h1>
           </div>
-          <span className="hidden rounded-full border border-[#bcc6be] bg-[#f3f5f1]/80 px-4 py-2 text-xs font-semibold text-[#35583f] sm:inline-flex">
-            AI 快捷创作
-          </span>
         </header>
 
-        <div className="grid items-center gap-8 py-12 lg:grid-cols-[1fr_220px]">
+        <div className="grid items-center gap-8 py-10 lg:grid-cols-[minmax(0,1fr)_360px]">
           <button
             type="button"
-            onClick={() => setPrompt(EXAMPLES[0].prompt)}
-            className="group flex min-h-24 w-full items-center gap-4 rounded-full border border-[#c4cbc5] bg-[#f7f8f4] px-7 text-left shadow-[0_18px_45px_rgba(31,43,35,0.09)] transition hover:-translate-y-0.5 hover:border-[#8fa092] focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-[#35583f] motion-reduce:transform-none"
+            onClick={() => setPrompt(suggestion)}
+            className="group grid min-h-24 w-full max-w-4xl items-center gap-3 text-left focus-visible:outline-2 focus-visible:outline-offset-8 focus-visible:outline-[#35583f] sm:grid-cols-[auto_1fr]"
           >
             <span className="shrink-0 text-sm font-semibold text-[#747973]">你可能想做：</span>
-            <strong className="text-base font-semibold text-[#35583f] sm:text-xl">
-              {EXAMPLES[0].prompt}
+            <strong
+              key={suggestionIndex}
+              data-testid="quick-start-suggestion"
+              className="quick-start-suggestion text-base font-semibold text-[#35583f] sm:text-xl"
+            >
+              {suggestion}
             </strong>
           </button>
 
-          <div
-            className="mx-auto grid aspect-square w-44 grid-cols-7 gap-1 rounded-[1.4rem] border border-[#c4cbc5] bg-[#eef1ed] p-5 shadow-[0_18px_45px_rgba(31,43,35,0.08)]"
-            aria-hidden="true"
-          >
-            {Array.from({ length: 49 }, (_, index) => {
-              const row = Math.floor(index / 7)
-              const column = index % 7
-              const active =
-                (row === 1 && column >= 2 && column <= 4) ||
-                (row >= 2 && row <= 4 && column >= 1 && column <= 5) ||
-                (row === 5 && (column === 2 || column === 4))
-              return (
-                <i
-                  key={index}
-                  className={`rounded-[2px] ${active ? 'bg-[#35583f]' : 'bg-[#d9ded8]'}`}
-                />
-              )
-            })}
-          </div>
+          <DynamicPixelField />
         </div>
 
         <div>
-          <div className="mb-3 flex flex-wrap gap-2">
-            {EXAMPLES.slice(1).map((example) => (
-              <button
-                key={example.label}
-                type="button"
-                onClick={() => setPrompt(example.prompt)}
-                className="rounded-full border border-[#c4cbc5] bg-[#f3f5f1] px-3 py-1.5 text-[11px] font-medium text-[#687069] hover:border-[#8fa092] hover:text-[#35583f]"
-              >
-                {example.label}
-              </button>
-            ))}
-          </div>
-
           <form
             onSubmit={(event) => void submit(event)}
             className="grid gap-3 rounded-[1.4rem] border border-[#bdc7bf] bg-[#f7f8f4] p-4 shadow-[0_22px_60px_rgba(31,43,35,0.12)] sm:grid-cols-[1fr_auto]"
@@ -705,21 +686,6 @@ function QuickCreateProgress({
         </footer>
       </div>
     </section>
-  )
-}
-
-function AmbientGrid() {
-  return (
-    <div
-      className="pointer-events-none absolute inset-0 opacity-50"
-      aria-hidden="true"
-      style={{
-        backgroundImage:
-          'linear-gradient(rgba(53, 88, 63, 0.045) 1px, transparent 1px), linear-gradient(90deg, rgba(53, 88, 63, 0.045) 1px, transparent 1px)',
-        backgroundSize: '32px 32px',
-        maskImage: 'linear-gradient(to bottom, black, transparent 84%)',
-      }}
-    />
   )
 }
 

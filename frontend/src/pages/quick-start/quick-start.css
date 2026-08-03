@@ -1,0 +1,205 @@
+.quick-start-suggestion {
+  animation: quick-start-suggestion-cycle 3s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.quick-start-pixel-field {
+  position: relative;
+  display: grid;
+  width: 320px;
+  height: 320px;
+  grid-template-columns: repeat(17, 5px);
+  grid-template-rows: repeat(17, 5px);
+  place-content: center;
+  gap: 9px;
+  background: radial-gradient(circle, rgba(17, 18, 17, 0.065), transparent 68%);
+}
+
+.quick-start-pixel-field i {
+  width: 5px;
+  height: 5px;
+  border-radius: 1px;
+  opacity: 0.62;
+  background: #bfc6bf;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  animation: quick-start-pixel-pulse 4.6s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-0 {
+  animation-delay: 0s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-1 {
+  animation-delay: -0.14s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-2 {
+  animation-delay: -0.28s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-3 {
+  animation-delay: -0.42s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-4 {
+  animation-delay: -0.56s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-5 {
+  animation-delay: -0.7s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-6 {
+  animation-delay: -0.84s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-7 {
+  animation-delay: -0.98s;
+}
+
+.quick-start-pixel-field .quick-start-pixel-ring-8 {
+  animation-delay: -1.12s;
+}
+
+.quick-start-pixel-field i.is-active {
+  opacity: 0.9;
+  background: #202120;
+  box-shadow: none;
+  animation: quick-start-pixel-frame 3.4s ease-in-out infinite;
+}
+
+.quick-start-pixel-field i.is-active.quick-start-pixel-phase-1 {
+  animation-delay: -0.18s;
+}
+
+.quick-start-pixel-field i.is-active.quick-start-pixel-phase-2 {
+  animation-delay: -0.36s;
+}
+
+.quick-start-pixel-field i.is-active.quick-start-pixel-phase-3 {
+  animation-delay: -0.54s;
+}
+
+.quick-start-pixel-field i.is-handle {
+  opacity: 1;
+  background: #050505;
+  box-shadow: 0 0 0 4px rgba(17, 18, 17, 0.09);
+  animation: quick-start-pixel-handle 3.8s ease-in-out infinite;
+}
+
+.quick-start-pixel-field i.is-cursor {
+  opacity: 1;
+  background: #090a09;
+  animation: quick-start-pixel-cursor 2.8s cubic-bezier(0.22, 1, 0.36, 1) infinite;
+}
+
+@keyframes quick-start-suggestion-cycle {
+  0% {
+    opacity: 0;
+    filter: blur(14px);
+    transform: translateY(8px);
+  }
+
+  14%,
+  82% {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0);
+  }
+
+  100% {
+    opacity: 0;
+    filter: blur(12px);
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes quick-start-pixel-pulse {
+  0%,
+  58%,
+  100% {
+    opacity: 0.5;
+    transform: scale(0.84);
+  }
+
+  16% {
+    opacity: 0.96;
+    transform: scale(1.08);
+  }
+
+  32% {
+    opacity: 0.68;
+    transform: scale(0.94);
+  }
+}
+
+@keyframes quick-start-pixel-frame {
+  0%,
+  100% {
+    opacity: 0.72;
+    transform: scale(0.86);
+  }
+
+  38% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+
+  62% {
+    opacity: 0.88;
+    transform: scale(0.96);
+  }
+}
+
+@keyframes quick-start-pixel-handle {
+  0%,
+  24%,
+  100% {
+    transform: scale(0.82);
+    box-shadow: 0 0 0 4px rgba(17, 18, 17, 0.07);
+  }
+
+  42%,
+  58% {
+    transform: scale(1.18);
+    box-shadow: 0 0 0 7px rgba(17, 18, 17, 0.1);
+  }
+}
+
+@keyframes quick-start-pixel-cursor {
+  0%,
+  14%,
+  100% {
+    opacity: 0.28;
+    transform: translate(-5px, -5px) scale(0.86);
+  }
+
+  38% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+
+  68% {
+    opacity: 0.92;
+    transform: translate(4px, 4px) scale(1.06);
+  }
+
+  82% {
+    opacity: 0.46;
+    transform: translate(5px, 5px) scale(0.9);
+  }
+}
+
+@media (max-width: 640px) {
+  .quick-start-pixel-field {
+    width: 238px;
+    height: 238px;
+    gap: 5px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .quick-start-suggestion,
+  .quick-start-pixel-field i {
+    animation: none;
+  }
+}
