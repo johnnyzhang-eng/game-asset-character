@@ -148,13 +148,6 @@ function toCharacter(raw: BackendCharacter): Character {
 
 /* ─── 适配器 ─── */
 
-interface BackendListResponse {
-  data: BackendCharacter[]
-  total: number
-  page: number
-  page_size: number
-}
-
 export function createCharacterApis(): CharacterApis {
   return {
     async get(id: string): Promise<Character> {
@@ -163,10 +156,12 @@ export function createCharacterApis(): CharacterApis {
     },
 
     async listByProject(projectId: string): Promise<Character[]> {
-      const raw = await get<BackendListResponse>(
+      // 同 project.list:后端把分页元信息放信封顶层,http-client 只透出 data(角色数组),
+      // 故按数组解析,不再取 raw.data。
+      const raw = await get<BackendCharacter[]>(
         `/characters?project_id=${encodeURIComponent(projectId)}`,
       )
-      return raw.data.map(toCharacter)
+      return raw.map(toCharacter)
     },
 
     async create(input: CreateCharacterInput): Promise<Character> {

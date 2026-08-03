@@ -92,13 +92,6 @@ function toUpdatePayload(input: UpdateProjectInput) {
 
 /* ─── 适配器 ─── */
 
-interface BackendListResponse {
-  data: BackendProject[]
-  total: number
-  page: number
-  page_size: number
-}
-
 export function createProjectApis(): ProjectApis {
   return {
     async list(query?: PageQuery): Promise<Paged<Project>> {
@@ -106,12 +99,15 @@ export function createProjectApis(): ProjectApis {
       if (query?.page) params.set('page', String(query.page))
       if (query?.pageSize) params.set('page_size', String(query.pageSize))
       const qs = params.toString()
-      const raw = await get<BackendListResponse>(`/projects${qs ? `?${qs}` : ''}`)
+      // 后端把 total/page/page_size 放在信封顶层(与 data 同级),而 http-client 只透出
+      // envelope.data(即项目数组本身),分页元信息被剥离。故这里按「数组」解析,
+      // 分页字段用回退值(loadCharacterCards 只用 items,不依赖 total/page)。
+      const raw = await get<BackendProject[]>(`/projects${qs ? `?${qs}` : ''}`)
       return {
-        items: raw.data.map(toProject),
-        total: raw.total,
-        page: raw.page,
-        pageSize: raw.page_size,
+        items: raw.map(toProject),
+        total: raw.length,
+        page: query?.page ?? 1,
+        pageSize: query?.pageSize ?? raw.length,
       }
     },
 
