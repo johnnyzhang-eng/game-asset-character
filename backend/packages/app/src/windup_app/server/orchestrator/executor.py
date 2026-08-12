@@ -305,6 +305,7 @@ class ActionTaskExecutor:
 
         from windup_app.server.orchestrator.render3d_adapter import (
             LocalDirAssetStore,
+            LocalDirModelReview,
             Render3DAdapter,
         )
         from windup_framework.providers.render3d import (
@@ -326,6 +327,9 @@ class ActionTaskExecutor:
             autorig=TencentAutoRigProvider(uploader, allow_spend=allow_spend),
             renderer=LocalSpriteRenderProvider(),
             store=LocalDirAssetStore(root),
+            # 生成的 3D 模型要先给人看过点头才继续绑骨(混元模型改不动,坏了只能重生成)。
+            # 待审模型落在 review/ 下,人旋转着看完手动放行。
+            review=LocalDirModelReview(root / "review"),
             may_build_assets=allow_spend,
         )
 

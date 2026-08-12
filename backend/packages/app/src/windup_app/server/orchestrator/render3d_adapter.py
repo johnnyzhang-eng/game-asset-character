@@ -25,9 +25,17 @@ bytes、不碰存储**,``CharacterCard`` 也**不新增 3D 资产字段**。
   - ``name`` 不唯一(落库时甚至可以为 null,#123 记过),拿它当键会让两个同名角色互相
     复用彼此的模型 —— 那是"看起来省钱、实际出错角色"的静默错误;
   - port docstring 早写明渲染出帧路线该靠 ``master_ref`` / ``version`` 定位 3D 资产;
-  - ``master_ref`` 为空时**不缓存也不假装缓存**:此时 :meth:`has_character_assets`
+  - ``master_ref`` 为空时**不缓存也不假装缓存**:此时 :meth:`Render3DAdapter.can_serve`
     返回 False,而 ``derive_frames`` 直接抛 —— 否则每个动作都重付 ①②,而调用方
     看到的只是"有点慢",不会发现自己在按动作付角色级的钱。
+
+━━ 生成出来的 3D 模型要先给人看过才往下走 ━━
+
+①② 之间有一道**人工确认停点**(:class:`ModelReviewGate`)。混元的模型不可事后修改,
+坏模型只能重生成;一口气冲到绑骨+出帧的话,一个坏模型会连带浪费绑骨的 10 积分和后面
+所有出帧,而人要看完一整套序列帧才发现锅在最上游。停点放在图生 3D 之后、绑骨之前 ——
+那是信息最全而花费最少的位置:模型已在手上可旋转着看,下游一分钱还没花。
+待审期间图生 3D 的产物**单独存一份**,故反复调用不会重付那笔钱。
 """
 from __future__ import annotations
 
@@ -102,6 +110,72 @@ class LocalDirAssetStore(CharacterAssetStore):
         tmp.replace(p)
 
 
+class ModelAwaitingReview(RuntimeError):
+    """3D 模型已生成、**在等人看过点头**,还不能往下走。
+
+    不是错误,是流程里的一个停点。故消息里带着"去哪看"和"怎么放行",让收到它的人
+    知道下一步该做什么,而不是以为管线坏了。
+    """
+
+    def __init__(self, key: str, where: str, how: str) -> None:
+        super().__init__(f"3D 模型待人工确认(key={key})。看这里:{where};放行:{how}")
+        self.key = key
+        self.where = where
+
+
+@runtime_checkable
+class ModelReviewGate(Protocol):
+    """生成出来的 3D 模型,**必须先给人看过、点头,才允许往下花钱绑骨 / 出帧**。
+
+    为什么这一道非要有:混元生成的 3D 模型**没法事后好好修改**,等于"生成即最终" ——
+    拓扑、绑点、配件都在生成那一步定死。所以模型不合格时唯一的补救是重新生成,而不是
+    修它。若管线一口气从图生 3D 冲到绑骨+出帧,一个坏模型会连带浪费掉绑骨的 10 积分和
+    后面所有出帧,人还要看完一整套序列帧才发现问题出在最上游那一步。
+
+    把停点放在图生 3D **之后、绑骨之前**,是因为这里是信息最全而花费最少的位置:
+    模型已经在手上可以旋转着看,而下游的钱一分还没花。
+    """
+
+    def submit(self, key: str, model: bytes, fmt: str) -> str:
+        """把待审模型交出去,返回"人该去哪看"的位置说明。"""
+        ...
+
+    def is_approved(self, key: str) -> bool:
+        """人是否已点头。**不得自动变 True** —— 那就等于这道闸不存在。"""
+        ...
+
+
+class LocalDirModelReview(ModelReviewGate):
+    """落本地目录 + 一个批准标记文件。
+
+    放行方式刻意做成"人手动建一个标记文件",而不是任何形式的超时自动放行:
+    自动放行的闸等于没有闸,只是把"没人看"伪装成"看过了"。
+    """
+
+    def __init__(self, root: pathlib.Path) -> None:
+        self._root = root
+        self._root.mkdir(parents=True, exist_ok=True)
+
+    def _stem(self, key: str) -> pathlib.Path:
+        return self._root / hashlib.sha256(key.encode()).hexdigest()[:32]
+
+    def submit(self, key: str, model: bytes, fmt: str) -> str:
+        model_path = self._stem(key).with_suffix(f".{fmt.lower()}")
+        if not model_path.is_file():                 # 已交过就别重写,人可能正在看
+            tmp = model_path.with_suffix(".part")
+            tmp.write_bytes(model)
+            tmp.replace(model_path)
+        (self._stem(key).with_suffix(".key.txt")).write_text(key, encoding="utf-8")
+        return str(model_path)
+
+    def is_approved(self, key: str) -> bool:
+        return self._stem(key).with_suffix(".approved").is_file()
+
+    def approve(self, key: str) -> None:
+        """人看过之后放行(给 CLI / 运维用;管线自己**不会**调这个)。"""
+        self._stem(key).with_suffix(".approved").write_text("ok", encoding="utf-8")
+
+
 class Render3DAdapter:
     """组合三段 + 角色级资产复用,实现 ai_engine 的 ``Render3DPort``。"""
 
@@ -111,6 +185,7 @@ class Render3DAdapter:
         autorig: AutoRigProvider,
         renderer: SpriteRenderProvider,
         store: CharacterAssetStore,
+        review: ModelReviewGate,
         *,
         may_build_assets: bool = False,
         directions: int = 4,
@@ -121,6 +196,7 @@ class Render3DAdapter:
         self._autorig = autorig
         self._renderer = renderer
         self._store = store
+        self._review = review
         self._may_build_assets = may_build_assets
         self._directions = directions
         self._material = material
@@ -197,11 +273,33 @@ class Render3DAdapter:
     def _build_character_assets(
         self, card: CharacterCard, master: bytes, key: str, progress: ProgressPort
     ) -> bytes:
-        """① 图生 3D + ② 绑骨。**按次计费,每角色一次性。**"""
-        progress.step("derive", 0, 3, "角色级资产未就绪:图生 3D(按次计费)")
-        model = self._model3d.image_to_3d(master, want="GLB")
+        """① 图生 3D →(人工确认)→ ② 绑骨。**按次计费,每角色一次性。**
 
-        progress.step("derive", 0, 3, "自动绑骨(按次计费,10 积分)")
+        中间那道人工确认是硬停点,原因见 :class:`ModelReviewGate`:模型不可事后修改,
+        坏模型只能重生成,所以要在**花绑骨的钱之前**让人看一眼。
+        """
+        raw_key = f"raw:{key}"
+
+        # 图生 3D 的产物单独存一份。**这不是冗余** —— 待审期间会有第二次、第三次调用走到
+        # 这里,若不存,每次都要重付一遍图生 3D 的钱,而停点的本意恰恰是省钱。
+        model = self._store.get(raw_key)
+        if model is None:
+            progress.step("derive", 0, 3, "角色级资产未就绪:图生 3D(按次计费)")
+            model = self._model3d.image_to_3d(master, want="GLB")
+            self._store.put(raw_key, model)
+            logger.info("图生 3D 产物已落点 key=%s bytes=%d", raw_key, len(model))
+
+        where = self._review.submit(key, model, "GLB")
+        if not self._review.is_approved(key):
+            progress.step("derive", 0, 3, "3D 模型已生成,等人工确认后才继续绑骨")
+            raise ModelAwaitingReview(
+                key,
+                where,
+                "确认模型可用后放行(旋转着看:见 README 里的本地 3D 台);"
+                "不合格就删掉待审模型重新生成 —— 混元的模型改不动,只能重生成",
+            )
+
+        progress.step("derive", 0, 3, "模型已确认,自动绑骨(按次计费,10 积分)")
         rigged: RiggedModel = self._autorig.rig(model, want="GLB")
 
         # 存的是**绑骨后**的产物:它是渲帧真正要的那个,存中间的 model 等于下次还得再绑一次。

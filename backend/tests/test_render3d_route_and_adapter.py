@@ -19,6 +19,8 @@ from windup_ai_engine.ports import RenderedFrames, RouteUnavailable
 from windup_ai_engine.strategy.concrete import RenderFrameStrategy, VideoFrameStrategy
 from windup_app.server.orchestrator.render3d_adapter import (
     LocalDirAssetStore,
+    LocalDirModelReview,
+    ModelAwaitingReview,
     Render3DAdapter,
 )
 from windup_common.models import (
@@ -116,13 +118,30 @@ class _FakeRenderer:
         return _sheet(self._directions, frames)
 
 
-def _adapter(tmp_path: pathlib.Path, renderer=None, may_build=True):
+class _AutoApproveReview:
+    """测试替身:直接放行。**只用于不测这道闸的用例** —— 闸本身另有专门用例。"""
+
+    def __init__(self) -> None:
+        self.submitted: list[str] = []
+
+    def submit(self, key: str, model: bytes, fmt: str) -> str:
+        self.submitted.append(key)
+        return f"<fake>/{key}.{fmt.lower()}"
+
+    def is_approved(self, key: str) -> bool:
+        return True
+
+
+def _adapter(tmp_path: pathlib.Path, renderer=None, may_build=True, review=None):
     """``may_build`` 缺省 True:多数用例要验建资产那一支的行为,而这里的三段都是假的、
-    不花真钱。**默认档(False)的行为另有专门用例**,见"花钱要有人点头"那一节。"""
+    不花真钱。**默认档(False)的行为另有专门用例**,见"花钱要有人点头"那一节。
+
+    ``review`` 缺省自动放行,同理 —— 人工确认停点的行为另有专门用例。"""
     m, r = _FakeModel3D(), _FakeAutoRig()
     rend = renderer or _FakeRenderer()
     return Render3DAdapter(
         model3d=m, autorig=r, renderer=rend, store=LocalDirAssetStore(tmp_path),
+        review=review or _AutoApproveReview(),
         may_build_assets=may_build,
     ), m, r, rend
 
@@ -323,3 +342,65 @@ def test_empty_render_output_raises(tmp_path):
     ad, *_ = _adapter(tmp_path, renderer=_EmptyRenderer())
     with pytest.raises(ValueError, match="未产出任何帧"):
         RenderFrameStrategy(ad).derive(_card(), _spec(), b"master", _NullProgress())
+
+
+# ── ⑥ 生成的 3D 模型必须先给人看过才往下走 ─────────────────────────────────
+
+
+def test_model_awaits_review_before_paying_for_rigging(tmp_path):
+    """图生 3D 之后停住,**绑骨那 10 积分一分没花**。
+
+    混元的模型改不动(生成即最终),坏模型只能重生成。一口气冲到绑骨+出帧的话,一个坏
+    模型会连带浪费绑骨的钱和后面所有出帧,而人要看完一整套序列帧才发现锅在最上游。
+    """
+    review = LocalDirModelReview(tmp_path / "review")
+    ad, m3d, rig, rend = _adapter(tmp_path, review=review)
+
+    with pytest.raises(ModelAwaitingReview) as e:
+        ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+
+    assert m3d.calls == 1, "图生 3D 该已经跑了(模型要拿出来给人看)"
+    assert rig.calls == 0, "绑骨的钱不该在人点头之前花掉"
+    assert rend.calls == 0
+    assert pathlib.Path(e.value.where).is_file(), "待审模型要真的落盘,人才看得到"
+
+
+def test_waiting_for_review_does_not_repay_image_to_3d(tmp_path):
+    """待审期间被反复调用,**不能每次都重付图生 3D**。
+
+    停点的本意是省钱;若每次轮询都重生成一次模型,这道闸就变成了花钱机器。
+    """
+    review = LocalDirModelReview(tmp_path / "review")
+    ad, m3d, rig, _ = _adapter(tmp_path, review=review)
+    for _ in range(3):
+        with pytest.raises(ModelAwaitingReview):
+            ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+    assert m3d.calls == 1, f"图生 3D 被重付了 {m3d.calls} 次"
+    assert rig.calls == 0
+
+
+def test_after_approval_it_proceeds_and_reuses_the_stored_model(tmp_path):
+    """人点头后继续绑骨,且复用已存的模型(不重新生成)。"""
+    review = LocalDirModelReview(tmp_path / "review")
+    ad, m3d, rig, rend = _adapter(tmp_path, review=review)
+    with pytest.raises(ModelAwaitingReview):
+        ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+
+    review.approve(Render3DAdapter._key(_card()))          # 人看过、放行
+
+    out = ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+    assert out.frames
+    assert m3d.calls == 1, "放行后不该再重付一次图生 3D"
+    assert rig.calls == 1
+    assert rend.calls == 1
+
+
+def test_review_never_self_approves(tmp_path):
+    """这道闸不得自动放行 —— 自动放行的闸等于没有闸。"""
+    review = LocalDirModelReview(tmp_path / "review")
+    key = "kodo://x@v1"
+    assert review.is_approved(key) is False
+    review.submit(key, b"model-bytes", "GLB")
+    assert review.is_approved(key) is False, "只是交上去待审,不该就算通过"
+    review.approve(key)
+    assert review.is_approved(key) is True
