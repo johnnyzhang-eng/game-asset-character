@@ -295,8 +295,10 @@ class Render3DAdapter:
             raise ModelAwaitingReview(
                 key,
                 where,
-                "确认模型可用后放行(旋转着看:见 README 里的本地 3D 台);"
-                "不合格就删掉待审模型重新生成 —— 混元的模型改不动,只能重生成",
+                "旋转着看:把待审的 .glb 放到一个静态服务下用 three.js 的 GLTFLoader "
+                "+ OrbitControls 开(浏览器禁止 file:// 加载本地模型,必须走 http://localhost);"
+                "确认可用就在同目录建一个同名 .approved 空文件放行;"
+                "不合格则删掉待审模型重新生成 —— 混元的模型改不动,只能重生成",
             )
 
         progress.step("derive", 0, 3, "模型已确认,自动绑骨(按次计费,10 积分)")
