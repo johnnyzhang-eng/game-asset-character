@@ -55,6 +55,17 @@ class DerivationStrategy(ABC):
 
     route: GenRoute
 
+    def supports(self, card: CharacterCard) -> bool:
+        """这条路线现在能不能给**这个角色**出帧。缺省能。
+
+        存在的理由只有一条:三渲二要先有该角色的 3D 资产才渲得出来,而前两条路线对角色
+        没有前置要求(身份由母版承载)。把这个判断放在 strategy 上,是为了让"能不能走"
+        由路线自己回答 —— generator 不必知道"渲染路线需要 3D 资产"这种某条路线的内情。
+
+        必须**不花钱、无副作用**:它在选路线时被调用,即在花钱之前。
+        """
+        return True
+
     @abstractmethod
     def derive(
         self,

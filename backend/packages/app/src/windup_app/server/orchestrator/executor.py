@@ -255,6 +255,7 @@ class ActionTaskExecutor:
             from windup_ai_engine.impl import CharacterGenerator
             from windup_ai_engine.strategy.concrete import (
                 PerFrameStrategy,
+                RenderFrameStrategy,
                 VideoFrameStrategy,
             )
             from windup_common.models import GenRoute
@@ -276,6 +277,7 @@ class ActionTaskExecutor:
             strategies = {
                 GenRoute.VIDEO_I2V: VideoFrameStrategy(video, matte),
                 GenRoute.PER_FRAME: PerFrameStrategy(image, matte),
+                GenRoute.RENDER_3D: RenderFrameStrategy(self._build_render3d()),
             }
             missing = set(GenRoute) - set(strategies)
             if missing:
@@ -285,6 +287,41 @@ class ActionTaskExecutor:
                 )
             self._generator = CharacterGenerator(strategies)
         return self._generator
+
+    def _build_render3d(self):
+        """装三渲二那三段 + 角色级资产落点。
+
+        三段全部懒构造:腾讯那两段要凭证、出帧那段要 node + playwright + three.js,
+        而**装配发生在每个动作任务的入口**——在这里就要齐,会让本来走 i2v 的任务也因为
+        三渲二的环境没配好而起不来。真正的缺件在被请求时才该显形。
+
+        落点默认走本地目录(``WINDUP_RENDER3D_ASSET_DIR``,缺省 ``./.windup/render3d``)。
+        **这个目录必须挂持久卷** —— 落在容器可写层里,每次重启都要重付一遍图生 3D +
+        绑骨(每角色一次性 → 每次部署一次)。多副本部署应换对象存储实现,同一个 Protocol
+        换注入即可,等 #121 拍板后做。
+        """
+        import os
+        import pathlib
+
+        from windup_app.server.orchestrator.render3d_adapter import (
+            LocalDirAssetStore,
+            Render3DAdapter,
+        )
+        from windup_framework.providers.render3d import (
+            LocalSpriteRenderProvider,
+            TencentAutoRigProvider,
+            TencentCosModelUploader,
+            TencentModel3DProvider,
+        )
+
+        root = pathlib.Path(os.getenv("WINDUP_RENDER3D_ASSET_DIR", ".windup/render3d"))
+        uploader = TencentCosModelUploader()
+        return Render3DAdapter(
+            model3d=TencentModel3DProvider(),
+            autorig=TencentAutoRigProvider(uploader),
+            renderer=LocalSpriteRenderProvider(),
+            store=LocalDirAssetStore(root),
+        )
 
     def _download_master(self, input: CharacterActionInput) -> bytes:
         if not input.reference_image_urls:

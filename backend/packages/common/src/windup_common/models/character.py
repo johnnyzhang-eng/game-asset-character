@@ -62,6 +62,11 @@ class GenRoute(str, Enum):
 
     VIDEO_I2V = "video_i2v"   # 步态位移动作:图生视频(连贯交替腿)
     PER_FRAME = "per_frame"   # 离散姿势:逐帧图生图(单帧可编辑)
+    # 三渲二:母版 → 图生 3D → 自动绑骨 → 套预设动作 → 渲 2D 序列帧。
+    # 随实现一起加(见本类 docstring 那条规矩)。它与上面两条有个**结构性差异**:
+    # 前两条由动作的物理性质唯一决定,这一条还取决于"该角色有没有 3D 资产",
+    # 所以不能只靠 ROUTE_MATRIX 选中 —— 见 strategy.base 与 ActionSpec.route。
+    RENDER_3D = "render_3d"
 
 
 class Facing(str, Enum):
@@ -170,6 +175,20 @@ class ActionSpec(BaseModel):
     palette_size: int = Field(default=32, ge=2)    # 色板色数(1 色的像素画不存在)
     # 生成提示词的朝向,**必须与母版朝向一致**(对应 Project.perspective)。
     facing: Facing = Facing.SIDE
+
+    # 显式指定生成路线;``None`` = 按 ROUTE_MATRIX 走动作类型的默认路线。
+    #
+    # 为什么要这个字段、而不是把 ROUTE_MATRIX 改成"动作 → 可选路线集合"再让引擎自己挑:
+    # ``strategy.base`` 的模块 docstring 记着这条边界 —— 前两条路线由动作的物理性质唯一
+    # 决定(有没有连续步态是动作固有属性),但**三渲二不是**:同一个 walk 既能走 i2v 也能走
+    # 渲染出帧,选哪条取决于"这个角色有没有 3D 资产"以及"这次要单帧质量还是要多朝向一致",
+    # 两者都是 **server 才知道的事**(引擎看不到资产库,也不该替产品定质量取舍)。
+    #
+    # 实测过的取舍(台账 2026-08-05,同一角色对比):i2v 单帧细节更清晰;三渲二工程指标更好
+    # (脚线 std 0.0px)但小尺寸下头发糊成色块,它的优势在**多朝向零成本 + 跨朝向天生一致**。
+    # 两条各有胜场,所以引擎**不做默认偏好**、也不在路线不可用时静默回退 —— 显式点了三渲二
+    # 却没有 3D 资产,要报错说清楚,不能悄悄出一段 i2v 让人以为用的是渲染路线。
+    route: GenRoute | None = None
 
     @model_validator(mode="before")
     @classmethod

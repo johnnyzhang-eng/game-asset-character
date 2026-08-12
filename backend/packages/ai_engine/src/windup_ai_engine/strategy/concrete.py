@@ -18,7 +18,7 @@ from windup_framework.providers import ImageProvider, MatteProvider, VideoProvid
 from windup_ai_engine._imgio import from_png as _img
 from windup_ai_engine._imgio import to_png as _png
 from windup_ai_engine.master_prep import prepare_master
-from windup_ai_engine.ports import ProgressPort
+from windup_ai_engine.ports import ProgressPort, Render3DPort
 from windup_ai_engine.postprocess import master_pixel_spec, pixelate_frames
 from windup_ai_engine.slicing import extract_all_frames_bytes, pick_cycle, pick_oneshot
 from windup_ai_engine.prompt import (
@@ -152,6 +152,82 @@ class PerFrameStrategy(DerivationStrategy):
             f"生成路线 {self.route.value} 尚未实现（动作 {action.action.value}）。"
             "见 1024XEngineer/Windup#53。"
         )
+
+
+class RenderFrameStrategy(DerivationStrategy):
+    """三渲二:母版 → 图生 3D → 绑骨 → 套预设动作 → 渲 2D 序列帧。
+
+    本类很薄,三段实现都在 :class:`Render3DPort` 后面(按 D3「provider 自持存储」定,
+    角色级资产的存放与复用由 provider 管)。这里只做三件 ai_engine 该做的事:
+    ① 花钱前先问资产在不在;② 把出参收成本层统一的 ``list[bytes]``;
+    ③ 把"多朝向被出参形状丢掉"这件事**如实报到进度里**,不闷掉。
+
+    与 i2v 的取舍(实测,台账 2026-08-05,别混为一谈):i2v 单帧细节更清晰;本路线工程指标
+    更好(脚线 std 0.0px)、**步态周期天然正确**(周期来自骨骼动画,不用从视频里猜),
+    但小尺寸下头发糊成色块。真正的独占优势是**多朝向零成本 + 跨朝向天生一致**。
+    """
+
+    route = GenRoute.RENDER_3D
+
+    def __init__(self, render: Render3DPort) -> None:
+        self._render = render
+
+    def supports(self, card: CharacterCard) -> bool:
+        # 花钱之前问一次。资产没就绪时由 generator 报错说清楚,不静默换路线。
+        return self._render.has_character_assets(card)
+
+    def derive(
+        self,
+        card: CharacterCard,
+        action: ActionSpec,
+        master: bytes,
+        progress: ProgressPort,
+    ) -> list[bytes]:
+        progress.step("derive", 0, 3, f"{action.action.value}: 三渲二出帧")
+        out = self._render.derive_frames(card, action, master, progress)
+
+        # 空产出必须在这里炸。让它流下去的后果与 PerFrameStrategy 那段注释里写的一样:
+        # 上层拿到"帧数不对但无异常"的结果,而钱已经花了。
+        if not out.frames:
+            raise ValueError(
+                f"三渲二未产出任何帧(动作 {action.action.value}、朝向 {out.direction or '未报'})。"
+            )
+
+        extra = [d for d in out.available_directions if d != out.direction]
+        if extra:
+            # 如实报:这些朝向已经渲出来了、零额外成本,但出参装不下,只能丢。
+            # 不写成 warning 日志而是进度文案,因为这串字最终会经 server 到用户眼前,
+            # 而"多朝向"正是这条路线的卖点 —— 用户该知道它已经算好了。
+            progress.step(
+                "derive", 1, 3,
+                f"已渲 {len(out.available_directions)} 个朝向,本次出参只带 "
+                f"{out.direction};其余 {','.join(extra)} 零成本可用但当前契约装不下(#122)",
+            )
+        else:
+            progress.step("derive", 1, 3, f"朝向 {out.direction or '默认'} 共 {len(out.frames)} 帧")
+
+        # 3D 帧本来就是透明底,**不套抠图**:去白边那一步会把浅灰甲当漏白吃掉
+        # (逐帧路线的后处理里有这个开关,台账已记)。像素化仍按 ActionSpec 走。
+        if action.stylize is Stylize.NONE:
+            progress.step("derive", 2, 3, "保留渲染画风(不像素化)")
+            return list(out.frames)
+
+        cut = [_img(f) for f in out.frames]
+        target_h, palette = action.pixel_h, None
+        try:
+            logical_h, pal = master_pixel_spec(_img(master))
+            if logical_h > 8:
+                target_h, palette = logical_h, pal
+        except Exception:
+            pass
+        progress.step(
+            "derive", 2, 3,
+            f"像素化(h={target_h}{'·锁母版色板' if palette is not None else '·通用量化'})",
+        )
+        pix = pixelate_frames(
+            cut, target_h=target_h, palette_size=action.palette_size, palette=palette,
+        )
+        return [_png(p) for p in pix]
 
 
 # 注:曾有 ProcIdleStrategy(GenRoute.PROC_IDLE)—— 待机走"母版抠图 + 程序化局部躯干呼吸"

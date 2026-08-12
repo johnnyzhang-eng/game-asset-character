@@ -25,6 +25,7 @@ from windup_ai_engine.ports import (
     CharacterGeneratorPort,
     GeneratedAction,
     ProgressPort,
+    RouteUnavailable,
 )
 from windup_ai_engine.postprocess import align_bottom_center, frame_durations
 from windup_ai_engine.slicing import dead_frame_indices, loop_seam, motion_scale
@@ -100,17 +101,34 @@ class CharacterGenerator(CharacterGeneratorPort):
         facts = check_master(master, canvas)
         progress.step("precheck", _TICK_PRECHECK, _TOTAL, facts.note())
 
-        # ② 选路线(架构决策矩阵)。装配表里没有 = 该路线未实现,在边界上炸,
-        # 不要让"看着成功、内容是空"的结果流到 server 去落库。
-        route = ROUTE_MATRIX[action.action]
+        # ② 选路线。默认按 ROUTE_MATRIX(动作类型 → 路线);调用方可用 ActionSpec.route
+        # 显式指定 —— 三渲二这条不能只由动作类型决定,还取决于该角色有没有 3D 资产、
+        # 以及这次要单帧质量还是要多朝向一致,那是 server 才知道的事(见 strategy.base
+        # 模块 docstring 与 ActionSpec.route 那段)。
+        route = action.route or ROUTE_MATRIX[action.action]
         # .value 而不是枚举本身:Python 3.11+ 的 str-mixin 枚举 __format__ 会给出
         # "ActionType.WALK",这串字最终是用户看到的进度文案(3.12.13 实测)。
-        progress.step("route", _TICK_ROUTE, _TOTAL, f"{action.action.value} → {route.value}")
+        explicit = " (调用方指定)" if action.route else ""
+        progress.step(
+            "route", _TICK_ROUTE, _TOTAL,
+            f"{action.action.value} → {route.value}{explicit}",
+        )
         strategy = self._by_route.get(route)
         if strategy is None:
             raise NotImplementedError(
                 f"动作 {action.action.value} 分流到 {route.value}，但未注入该路线的 strategy。"
                 f"已装配：{sorted(r.value for r in self._by_route)}。"
+            )
+        # 路线装配了、但对**这个角色**还不能用(目前只有三渲二会这样:缺该角色的 3D 资产)。
+        # **不静默回退到别的路线**:回退等于"用户点了三渲二、拿到一段 i2v、且没有任何提示",
+        # 而两条路线的画风、成本、多朝向能力都不同,调用方会照着错误的前提做后续决定。
+        # 这一道在花钱之前(supports 约定不花钱无副作用)。
+        if not strategy.supports(card):
+            raise RouteUnavailable(
+                route.value,
+                f"角色 {card.name!r}(version={card.version})尚不具备该路线的前置资产。"
+                "三渲二要先有该角色的角色级 3D 资产(图生 3D + 绑骨,每角色一次性);"
+                "请先备好资产,或改走 video_i2v。",
             )
 
         # ③ 生成帧(交给 strategy —— 串联)
