@@ -174,7 +174,7 @@ class RenderFrameStrategy(DerivationStrategy):
 
     def supports(self, card: CharacterCard) -> bool:
         # 花钱之前问一次。资产没就绪时由 generator 报错说清楚,不静默换路线。
-        return self._render.has_character_assets(card)
+        return self._render.can_serve(card)
 
     def derive(
         self,

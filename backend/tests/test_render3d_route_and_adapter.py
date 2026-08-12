@@ -116,11 +116,14 @@ class _FakeRenderer:
         return _sheet(self._directions, frames)
 
 
-def _adapter(tmp_path: pathlib.Path, renderer=None):
+def _adapter(tmp_path: pathlib.Path, renderer=None, may_build=True):
+    """``may_build`` 缺省 True:多数用例要验建资产那一支的行为,而这里的三段都是假的、
+    不花真钱。**默认档(False)的行为另有专门用例**,见"花钱要有人点头"那一节。"""
     m, r = _FakeModel3D(), _FakeAutoRig()
     rend = renderer or _FakeRenderer()
     return Render3DAdapter(
-        model3d=m, autorig=r, renderer=rend, store=LocalDirAssetStore(tmp_path)
+        model3d=m, autorig=r, renderer=rend, store=LocalDirAssetStore(tmp_path),
+        may_build_assets=may_build,
     ), m, r, rend
 
 
@@ -165,7 +168,7 @@ def test_assets_survive_a_new_adapter_instance(tmp_path):
     assert (m1.calls, r1.calls) == (1, 1)
 
     ad2, m2, r2, _ = _adapter(tmp_path)          # 同一个目录
-    assert ad2.has_character_assets(_card()) is True
+    assert ad2.can_serve(_card()) is True
     ad2.derive_frames(_card(), _spec(), b"master", _NullProgress())
     assert (m2.calls, r2.calls) == (0, 0), "重启后又付了一遍角色级的钱"
 
@@ -188,19 +191,52 @@ def test_no_master_ref_raises_before_spending(tmp_path):
     assert (m3d.calls, rig.calls) == (0, 0), "报错前不该已经花过钱"
 
 
-def test_has_character_assets_costs_nothing(tmp_path):
-    """supports/has_ 这条要在选路线时调用,即在花钱之前,必须无副作用。"""
-    ad, m3d, rig, rend = _adapter(tmp_path)
-    assert ad.has_character_assets(_card()) is False
+def test_can_serve_costs_nothing(tmp_path):
+    """can_serve 在选路线时调用,即在花钱之前,必须无副作用。"""
+    ad, m3d, rig, rend = _adapter(tmp_path, may_build=False)
+    assert ad.can_serve(_card()) is False
     assert (m3d.calls, rig.calls, rend.calls) == (0, 0, 0)
+
+
+# ── 花钱要有人点头(默认档 may_build_assets=False)────────────────────────────
+
+
+def test_default_posture_refuses_to_build_assets(tmp_path):
+    """默认不授权花钱:新角色**不会**被一个请求顺手扣掉 ¥3.60。"""
+    ad, m3d, rig, _ = _adapter(tmp_path, may_build=False)
+    with pytest.raises(ValueError, match="未获准建"):
+        ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+    assert (m3d.calls, rig.calls) == (0, 0), "默认档下不该花掉任何一笔"
+
+
+def test_default_posture_still_serves_characters_that_already_have_assets(tmp_path):
+    """默认档不是"整条路线关掉":已有资产的角色照常出帧(渲帧本就零成本)。"""
+    ready, *_ = _adapter(tmp_path, may_build=True)
+    ready.derive_frames(_card(), _spec(), b"master", _NullProgress())   # 先备好
+
+    ad, m3d, rig, rend = _adapter(tmp_path, may_build=False)
+    assert ad.can_serve(_card()) is True
+    ad.derive_frames(_card(), _spec(), b"master", _NullProgress())
+    assert (m3d.calls, rig.calls) == (0, 0)
+    assert rend.calls == 1
+
+
+def test_authorized_posture_reports_route_available_before_assets_exist(tmp_path):
+    """获准花钱时,资产还没建也该判"这条路线能用" —— 否则明明能跑却被拒。"""
+    ad, *_ = _adapter(tmp_path, may_build=True)
+    assert ad.can_serve(_card()) is True
 
 
 # ── ② 路线选择:不静默回退 ────────────────────────────────────────────────
 
 
 def test_explicit_render3d_without_assets_raises_not_falls_back(tmp_path):
-    """点了三渲二但资产没就绪 → 报错,**不能**悄悄给一段 i2v。"""
-    ad, *_ = _adapter(tmp_path)
+    """点了三渲二但这条路线对该角色不可用 → 报错,**不能**悄悄给一段 i2v。
+
+    用默认档(未授权花钱)+ 无资产来构造"真的不可用";授权档下没资产是可以现建的,
+    那种情形不该被拒(另有用例)。
+    """
+    ad, *_ = _adapter(tmp_path, may_build=False)
     gen = CharacterGenerator({
         GenRoute.RENDER_3D: RenderFrameStrategy(ad),
         GenRoute.VIDEO_I2V: VideoFrameStrategy(None, None),

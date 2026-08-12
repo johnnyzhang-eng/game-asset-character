@@ -112,6 +112,7 @@ class Render3DAdapter:
         renderer: SpriteRenderProvider,
         store: CharacterAssetStore,
         *,
+        may_build_assets: bool = False,
         directions: int = 4,
         material: str = "cel",
         size: tuple[int, int] = RENDER_SIZE,
@@ -120,6 +121,7 @@ class Render3DAdapter:
         self._autorig = autorig
         self._renderer = renderer
         self._store = store
+        self._may_build_assets = may_build_assets
         self._directions = directions
         self._material = material
         self._size = size
@@ -132,10 +134,19 @@ class Render3DAdapter:
         return f"{ref}@{card.version}" if ref else None
 
     # ── Render3DPort ─────────────────────────────────────────────────────
-    def has_character_assets(self, card: CharacterCard) -> bool:
-        """不花钱、无副作用:只查落点里有没有这个角色的绑骨产物。"""
+    def can_serve(self, card: CharacterCard) -> bool:
+        """资产已就绪,**或者**本实例获准现建。不花钱、无副作用。
+
+        ``may_build_assets=False``(默认)时只认存量。这不是保守,是因为建资产是
+        **每角色 ¥3.60**(图生 3D 20 积分 + 绑骨 10 积分 × ¥0.12)的按次计费,
+        不该由一个 web 请求顺手触发 —— 那正是"无人值守烧钱"。默认档下新角色要先
+        由人显式授权建资产(见 executor 里的 ``WINDUP_RENDER3D_ALLOW_SPEND``),
+        路线选择那一步会给出可读的拒绝理由,而不是悄悄扣一笔钱。
+        """
         key = self._key(card)
-        return bool(key) and self._store.get(key) is not None
+        if not key:
+            return False        # 没 master_ref 连缓存都做不了,现建也没意义(见 derive_frames)
+        return self._store.get(key) is not None or self._may_build_assets
 
     def derive_frames(
         self,
@@ -154,6 +165,14 @@ class Render3DAdapter:
 
         rigged_bytes = self._store.get(key)
         if rigged_bytes is None:
+            if not self._may_build_assets:
+                # can_serve 本该把这种情况挡在前面;走到这里说明调用方绕过了预检。
+                # 仍然要拦 —— 这一支是**每角色 ¥3.60** 的按次计费,不能靠"上游会检查"兜着。
+                raise ValueError(
+                    f"角色 {card.name!r} 的 3D 资产未就绪,而本实例未获准建(建一次约 ¥3.60:"
+                    "图生 3D 20 积分 + 绑骨 10 积分)。要现建请显式授权花钱,"
+                    "或先把资产备好,或改走 video_i2v。"
+                )
             # 只有这一支会花钱,且**每角色只会走一次**。
             rigged_bytes = self._build_character_assets(card, master, key, progress)
 

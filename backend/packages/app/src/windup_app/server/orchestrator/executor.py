@@ -315,12 +315,18 @@ class ActionTaskExecutor:
         )
 
         root = pathlib.Path(os.getenv("WINDUP_RENDER3D_ASSET_DIR", ".windup/render3d"))
+        # 建角色级资产是**每角色 ¥3.60** 的按次计费(图生 3D 20 积分 + 绑骨 10 积分 ×
+        # ¥0.12)。默认**不授权** —— 一个 web 请求不该顺手扣这笔钱,那正是无人值守烧钱。
+        # 默认档下:已有资产的角色照常出帧(渲帧零成本),新角色则在路线选择那一步被
+        # 明确拒绝并给出理由,而不是悄悄扣钱。要放开就显式设这个环境变量。
+        allow_spend = os.getenv("WINDUP_RENDER3D_ALLOW_SPEND", "").lower() in ("1", "true", "yes")
         uploader = TencentCosModelUploader()
         return Render3DAdapter(
-            model3d=TencentModel3DProvider(),
-            autorig=TencentAutoRigProvider(uploader),
+            model3d=TencentModel3DProvider(allow_spend=allow_spend),
+            autorig=TencentAutoRigProvider(uploader, allow_spend=allow_spend),
             renderer=LocalSpriteRenderProvider(),
             store=LocalDirAssetStore(root),
+            may_build_assets=allow_spend,
         )
 
     def _download_master(self, input: CharacterActionInput) -> bytes:
