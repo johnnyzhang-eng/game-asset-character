@@ -57,12 +57,20 @@ from windup_framework.providers.render3d import (
 
 logger = logging.getLogger(__name__)
 
-# Facing → 出帧台的朝向名。出帧台里 0° = 角色朝屏幕右(对齐 faces="right"),
-# 逆时针每 45° 一个,故 e=朝右、s=朝观者。键名与前端导出模型的
-# ExportAction.sequences[].direction 同域,不需要转换层。
+# Facing → 出帧台的朝向名。键名与前端导出模型的 ExportAction.sequences[].direction
+# 同域,不需要转换层。
+#
+# **这张表是实测定的,不是按方位名推的。** 2026-08-12 用一只四足角色真渲 8 朝向后逐张量:
+#   n(yaw=90°)  浅色像素占比 21.0%  ← 奶白胸腹与口鼻可见 = **正面**
+#   s(yaw=270°) 浅色像素占比  8.5%  ← 只见深色背与尾     = 背面
+#   两者主体像素 512334 / 512335,轮廓面积几乎相同(同一角色的正反面),所以只能靠内容分辨。
+# 我最初按"south = 朝观者"的直觉把 FRONT 写成 "s",那会交出一个**背朝观者**的序列。
+#
+# 这类错单元测试逮不到:朝向错了但帧数、时长、成色全部正常,没有任何一道会红 ——
+# 只能靠真渲一次并看图。改这张表之前请先渲一遍再量,别按方位名改回去。
 _FACING_TO_DIRECTION: dict[Facing, str] = {
-    Facing.SIDE: "e",     # 横版侧视,角色朝画面右
-    Facing.FRONT: "s",    # 身体正对观者
+    Facing.SIDE: "e",     # yaw=0°,角色朝画面右(与出帧台 faces="right" 同口径,实测确认)
+    Facing.FRONT: "n",    # yaw=90°,身体正对观者(实测:浅色占比 21.0% vs 背面 8.5%)
 }
 
 

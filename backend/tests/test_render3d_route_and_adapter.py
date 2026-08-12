@@ -291,7 +291,7 @@ def test_explicit_route_is_honoured_over_matrix(tmp_path):
 def test_requested_facing_picks_the_matching_direction(tmp_path):
     ad, *_ = _adapter(tmp_path)
     out = ad.derive_frames(_card(), _spec(facing=Facing.FRONT), b"master", _NullProgress())
-    assert out.direction == "s", "FRONT 应取朝观者那一条"
+    assert out.direction == "n", "FRONT 应取朝观者那一条(实测 n 是正面,不是 s)"
     out = ad.derive_frames(_card(), _spec(facing=Facing.SIDE), b"master", _NullProgress())
     assert out.direction == "e", "SIDE 应取朝画面右那一条"
 
