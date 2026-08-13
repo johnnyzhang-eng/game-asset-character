@@ -62,8 +62,23 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def _is_dir(p: pathlib.Path) -> bool:
+    """``p.is_dir()``,但把"问不出来"当成 False。
+
+    向上搜 node_modules 会一路走到 ``/``,而根下有些合成入口对 ``stat`` 直接报错而不是
+    返回"不存在":macOS 上 ``/.resolve/node_modules/three`` 抛 ``OSError(EINVAL)``,
+    于是整条发现逻辑连同**所有**依赖它的用例一起崩(本机实测 6 个用例红,与被测代码无关)。
+    找不到 three.js 是一种正常结果(调用方另有报错路径),搜索途中问不出来更是,
+    两者都不该表现成崩溃。
+    """
+    try:
+        return p.is_dir()
+    except OSError:
+        return False
+
+
 def _find_dir(candidates: list[pathlib.Path]) -> pathlib.Path | None:
-    return next((c for c in candidates if c.is_dir()), None)
+    return next((c for c in candidates if _is_dir(c)), None)
 
 
 def _discover_three(levels: int = 6) -> pathlib.Path | None:
@@ -83,7 +98,7 @@ def _discover_three(levels: int = 6) -> pathlib.Path | None:
         roots += [start, *list(start.parents)[:levels]]
     for root in roots:
         direct = root / "node_modules" / "three"
-        if direct.is_dir():
+        if _is_dir(direct):
             return direct
         try:
             children = sorted(c for c in root.iterdir() if c.is_dir())
