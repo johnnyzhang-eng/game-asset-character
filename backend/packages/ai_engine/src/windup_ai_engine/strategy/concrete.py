@@ -3,6 +3,8 @@
 - VideoFrameStrategy：**已迁入 windup-pipeline 实测通路**（walk 主链，2026-07-27 验证）。
 - PerFrameStrategy：**未实现**，调用即抛 NotImplementedError（见 #53）。不返回空帧——
   空帧会伪装成一次成功的生成流到 server 落库，用户看到的是一组裂图。
+- RenderFrameStrategy：三渲二。吃**已绑骨的 3D 模型**（不是母版图），纯本地渲帧、
+  零 API 成本；建模型那两段按次计费的活在 server 侧（#121 #122）。
 
 VideoFrameStrategy 实测通路：严格侧面母版 → kling i2v(v2-5-turbo) → 抽单循环 N 帧 →
 matte 抠图 → 像素化。返回对齐前的 RGBA PNG 帧（对齐 / 打包在 CharacterGenerator 最后一公里）。
@@ -12,13 +14,25 @@ from __future__ import annotations
 
 import numpy as np
 
-from windup_common.models import ActionSpec, ActionType, CharacterCard, GenRoute, Stylize
+from windup_common.models import (
+    ActionSpec,
+    ActionType,
+    CharacterCard,
+    Facing,
+    GenRoute,
+    Stylize,
+)
 from windup_framework.providers import ImageProvider, MatteProvider, VideoProvider
+from windup_framework.providers.render3d import (
+    RENDER_SIZE,
+    SpriteRenderProvider,
+    SpriteSheet,
+)
 
 from windup_ai_engine._imgio import from_png as _img
 from windup_ai_engine._imgio import to_png as _png
 from windup_ai_engine.master_prep import prepare_master
-from windup_ai_engine.ports import ProgressPort, Render3DPort
+from windup_ai_engine.ports import ProgressPort
 from windup_ai_engine.postprocess import master_pixel_spec, pixelate_frames
 from windup_ai_engine.slicing import extract_all_frames_bytes, pick_cycle, pick_oneshot
 from windup_ai_engine.prompt import (
@@ -154,13 +168,35 @@ class PerFrameStrategy(DerivationStrategy):
         )
 
 
-class RenderFrameStrategy(DerivationStrategy):
-    """三渲二:母版 → 图生 3D → 绑骨 → 套预设动作 → 渲 2D 序列帧。
+# Facing → 出帧台的朝向名。键名与前端导出模型的 ExportAction.sequences[].direction
+# 同域,不需要转换层。
+#
+# **这张表是实测定的,不是按方位名推的。** 2026-08-12 用一只四足角色真渲 8 朝向后逐张量:
+#   n(yaw=90°)  浅色像素占比 21.0%  ← 奶白胸腹与口鼻可见 = **正面**
+#   s(yaw=270°) 浅色像素占比  8.5%  ← 只见深色背与尾     = 背面
+#   两者主体像素 512334 / 512335,轮廓面积几乎相同(同一角色的正反面),所以只能靠内容分辨。
+# 我最初按"south = 朝观者"的直觉把 FRONT 写成 "s",那会交出一个**背朝观者**的序列。
+#
+# 这类错单元测试逮不到:朝向错了但帧数、时长、成色全部正常,没有任何一道会红 ——
+# 只能靠真渲一次并看图。改这张表之前请先渲一遍再量,别按方位名改回去。
+_FACING_TO_DIRECTION: dict[Facing, str] = {
+    Facing.SIDE: "e",     # yaw=0°,角色朝画面右(与出帧台 faces="right" 同口径,实测确认)
+    Facing.FRONT: "n",    # yaw=90°,身体正对观者(实测:浅色占比 21.0% vs 背面 8.5%)
+}
 
-    本类很薄,三段实现都在 :class:`Render3DPort` 后面(按 D3「provider 自持存储」定,
-    角色级资产的存放与复用由 provider 管)。这里只做三件 ai_engine 该做的事:
-    ① 花钱前先问资产在不在;② 把出参收成本层统一的 ``list[bytes]``;
-    ③ 把"多朝向被出参形状丢掉"这件事**如实报到进度里**,不闷掉。
+
+class RenderFrameStrategy(DerivationStrategy):
+    """三渲二:已绑骨的 3D 模型 → 套预设动作 → 渲 2D 序列帧。
+
+    **本策略吃的是绑骨模型,不是母版图。** 图生 3D 与自动绑骨那两段按次计费、每角色
+    一次性,不在这条出帧路径上 —— 它们由 server 侧的 ``Render3DAssetBuilder`` 负责,
+    产物存在造型上(#121)。走到这里时钱已经花完且只花过一次,本段是**纯本地、零 API 成本**。
+
+    这个划分是 #122 评审定的。早先的做法是在 ai_engine 里立一个 ``Render3DPort``,
+    把三段(图生 3D + 绑骨 + 渲帧)整个塞在它后面,再给它挂一个 ``can_serve`` 预查询。
+    问题有两个:一是三段的成本结构完全不同,捆在一个 port 后面就看不出"哪一步花钱";
+    二是 ``can_serve`` 要回答"这个造型有没有 3D 资产",而那份数据在 DB 里,引擎答不了。
+    现在本策略与 ``VideoFrameStrategy`` 完全对称 —— 各自吃一个 framework provider。
 
     与 i2v 的取舍(实测,台账 2026-08-05,别混为一谈):i2v 单帧细节更清晰;本路线工程指标
     更好(脚线 std 0.0px)、**步态周期天然正确**(周期来自骨骼动画,不用从视频里猜),
@@ -169,63 +205,91 @@ class RenderFrameStrategy(DerivationStrategy):
 
     route = GenRoute.RENDER_3D
 
-    def __init__(self, render: Render3DPort) -> None:
-        self._render = render
-
-    def supports(self, card: CharacterCard) -> bool:
-        # 花钱之前问一次。资产没就绪时由 generator 报错说清楚,不静默换路线。
-        return self._render.can_serve(card)
+    def __init__(
+        self,
+        renderer: SpriteRenderProvider,
+        *,
+        directions: int = 4,
+        material: str = "cel",
+        size: tuple[int, int] = RENDER_SIZE,
+    ) -> None:
+        self._renderer = renderer
+        self._directions = directions
+        self._material = material
+        self._size = size
 
     def derive(
         self,
         card: CharacterCard,
         action: ActionSpec,
-        master: bytes,
+        rigged_model: bytes,
         progress: ProgressPort,
     ) -> list[bytes]:
-        progress.step("derive", 0, 3, f"{action.action.value}: 三渲二出帧")
-        out = self._render.derive_frames(card, action, master, progress)
-
-        # 空产出必须在这里炸。让它流下去的后果与 PerFrameStrategy 那段注释里写的一样:
-        # 上层拿到"帧数不对但无异常"的结果,而钱已经花了。
-        if not out.frames:
+        if not rigged_model:
+            # 空模型必须在这里炸。让它流下去的话出帧台会报一句"Bad glTF",排查方向
+            # 完全跑偏(2026-08-05 被坑过一次,当时差点判成"出帧管线坏了")。
             raise ValueError(
-                f"三渲二未产出任何帧(动作 {action.action.value}、朝向 {out.direction or '未报'})。"
+                f"三渲二拿到空的绑骨模型(角色 {card.name!r}、动作 {action.action.value})。"
+                "server 侧应在调用前确认该造型的 3D 资产可读。"
             )
 
-        extra = [d for d in out.available_directions if d != out.direction]
+        want = _FACING_TO_DIRECTION.get(action.facing, "e")
+        progress.step(
+            "derive", 0, 3,
+            f"渲 {self._directions} 朝向 × {action.n_frames} 帧"
+            f"({self._size[0]}×{self._size[1]},材质 {self._material})",
+        )
+        sheet: SpriteSheet = self._renderer.render(
+            rigged_model,
+            clip=action.action.value,
+            directions=self._directions,
+            frames=action.n_frames,
+            size=self._size,
+            material=self._material,
+        )
+
+        available = tuple(s.direction for s in sheet.sequences)
+        chosen = next((s for s in sheet.sequences if s.direction == want), None)
+        if chosen is None:
+            # 不静默换一个朝向交出去:朝向错了的序列帧就是角色朝反方向走,
+            # 而帧数、时长、成色全都正常,没有任何一道会红。
+            raise ValueError(
+                f"出帧台没有产出朝向 {want}(动作 {action.action.value}、facing "
+                f"{action.facing.value});实际产出 {available}。"
+            )
+        frames = list(chosen.frames)
+        if not frames:
+            raise ValueError(
+                f"三渲二未产出任何帧(动作 {action.action.value}、朝向 {chosen.direction})。"
+            )
+
+        extra = [d for d in available if d != chosen.direction]
         if extra:
             # 如实报:这些朝向已经渲出来了、零额外成本,但出参装不下,只能丢。
             # 不写成 warning 日志而是进度文案,因为这串字最终会经 server 到用户眼前,
             # 而"多朝向"正是这条路线的卖点 —— 用户该知道它已经算好了。
             progress.step(
                 "derive", 1, 3,
-                f"已渲 {len(out.available_directions)} 个朝向,本次出参只带 "
-                f"{out.direction};其余 {','.join(extra)} 零成本可用但当前契约装不下(#122)",
+                f"已渲 {len(available)} 个朝向,本次出参只带 {chosen.direction};"
+                f"其余 {','.join(extra)} 零成本可用但当前契约装不下(#122)",
             )
         else:
-            progress.step("derive", 1, 3, f"朝向 {out.direction or '默认'} 共 {len(out.frames)} 帧")
+            progress.step("derive", 1, 3, f"朝向 {chosen.direction} 共 {len(frames)} 帧")
 
         # 3D 帧本来就是透明底,**不套抠图**:去白边那一步会把浅灰甲当漏白吃掉
         # (逐帧路线的后处理里有这个开关,台账已记)。像素化仍按 ActionSpec 走。
         if action.stylize is Stylize.NONE:
             progress.step("derive", 2, 3, "保留渲染画风(不像素化)")
-            return list(out.frames)
+            return frames
 
-        cut = [_img(f) for f in out.frames]
-        target_h, palette = action.pixel_h, None
-        try:
-            logical_h, pal = master_pixel_spec(_img(master))
-            if logical_h > 8:
-                target_h, palette = logical_h, pal
-        except Exception:
-            pass
-        progress.step(
-            "derive", 2, 3,
-            f"像素化(h={target_h}{'·锁母版色板' if palette is not None else '·通用量化'})",
-        )
+        # 像素化的目标高与色板本来该从母版量(master_pixel_spec),但本路线**没有母版** ——
+        # 它吃的是 3D 模型。所以只能按 ActionSpec 声明的 pixel_h + 通用量化走。
+        # 这是一处已知差异,不是遗漏:锁母版色板要靠母版像素,而这条路线上根本没有那张图。
+        progress.step("derive", 2, 3, f"像素化(h={action.pixel_h}·通用量化)")
         pix = pixelate_frames(
-            cut, target_h=target_h, palette_size=action.palette_size, palette=palette,
+            [_img(f) for f in frames],
+            target_h=action.pixel_h,
+            palette_size=action.palette_size,
         )
         return [_png(p) for p in pix]
 

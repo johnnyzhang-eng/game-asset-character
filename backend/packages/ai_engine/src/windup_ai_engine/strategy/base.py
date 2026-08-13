@@ -45,34 +45,43 @@ CYCLIC_ACTIONS: frozenset[ActionType] = frozenset(
 # 本矩阵的形状本身有个已知边界,记录在此以免后来者按错误前提扩展:
 # 它是「动作类型 → 路线」的一对一映射,隐含前提是"路线由动作的物理性质唯一决定"。
 # 该前提对逐帧 / 视频两条路线成立(有无连续步态是动作固有属性),但对渲染出帧路线不成立
-# —— 同一个 walk 既可走 i2v 也可走渲染,选哪条取决于"该角色有没有 3D 模型",那是 server
-# 才知道的事。接入第三条路线前须先定「路线选择由谁决定」,并可能要把本矩阵改成
-# 「动作类型 → 可选路线集合」+ 一个选择器。Refs 1024XEngineer/Windup#81 #122。
+# —— 同一个 walk 既可走 i2v 也可走渲染,选哪条取决于"该造型有没有 3D 模型",那是 server
+# 才知道的事。
+#
+# **已定案(#122,2026-08-13):不改这张表的形状。** 渲染出帧路线**不进本矩阵** ——
+# 它由 server 读 DB 判断有没有 3D 资产后,直接调 ``CharacterGeneratorPort.generate_rendered``。
+# 本矩阵继续只管"由动作物理性质唯一决定"的那两条,前提因此仍然成立。
+# 曾考虑过的两条替代都被否掉:改成「动作 → 可选路线集合」+ 选择器,等于把一个只有 DB
+# 才答得出的问题塞进引擎;在 ActionSpec 上加 ``route`` 字段让调用方点,则那个字段在
+# server 直接选方法之后零消费方(已删)。Refs 1024XEngineer/Windup#81 #122。
 
 
 class DerivationStrategy(ABC):
-    """一条生成路线的骨架:母版 → 对齐前的角色帧序列。"""
+    """一条生成路线的骨架:一份源 bytes → 对齐前的角色帧序列。
+
+    注:这里曾有一个 ``supports(card) -> bool``,让路线自报"能不能服务这个角色"
+    (只有三渲二会返回 False:缺该角色的 3D 资产)。**2026-08-13 删除(#122 评审)** ——
+    "有没有 3D 资产"这份数据在 DB 里,只有 server 看得到;让引擎回答它,要么引擎去反查
+    存储(破分层),要么它只能猜。现在由 server 读 DB 后直接决定调 ``generate`` 还是
+    ``generate_rendered``,这个钩子零消费方,删掉。
+    """
 
     route: GenRoute
-
-    def supports(self, card: CharacterCard) -> bool:
-        """这条路线现在能不能给**这个角色**出帧。缺省能。
-
-        存在的理由只有一条:三渲二要先有该角色的 3D 资产才渲得出来,而前两条路线对角色
-        没有前置要求(身份由母版承载)。把这个判断放在 strategy 上,是为了让"能不能走"
-        由路线自己回答 —— generator 不必知道"渲染路线需要 3D 资产"这种某条路线的内情。
-
-        必须**不花钱、无副作用**:它在选路线时被调用,即在花钱之前。
-        """
-        return True
 
     @abstractmethod
     def derive(
         self,
         card: CharacterCard,
         action: ActionSpec,
-        master: bytes,
+        source: bytes,
         progress: ProgressPort,
     ) -> list[bytes]:
-        """从母版 bytes 产出对齐前的角色帧(RGBA PNG bytes 列表)。"""
+        """从源 bytes 产出对齐前的角色帧(RGBA PNG bytes 列表)。
+
+        ``source`` 的含义**随路线不同**:``video_i2v`` / ``per_frame`` 吃定妆母版图;
+        ``render_3d`` 吃该造型已绑骨的 3D 模型。这不是含糊其辞的入参 —— 两者分别由
+        ``CharacterGenerator.generate`` 与 ``generate_rendered`` 各自喂进来,同一个调用点
+        不存在传错的可能;各实现的形参名按自己吃的东西命名,别在这里统一成 ``master``,
+        那会让渲染路线的签名说谎。
+        """
         raise NotImplementedError

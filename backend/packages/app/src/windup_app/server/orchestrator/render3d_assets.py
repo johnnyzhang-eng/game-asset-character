@@ -1,33 +1,41 @@
-"""Render3DPort 的实现 —— 把三渲二那三段拼成"母版 → 这个动作的帧"。
+"""角色级 3D 资产的建造与落点 —— 三渲二里**花钱的那两段**。
 
-放在 app 层而不是 framework:``Render3DPort`` 是 ai_engine 的 port,而依赖方向是
-**ai_engine → framework**(``strategy.concrete`` import ``windup_framework.providers``)。
-在 framework 里实现 ai_engine 的 port 会成环。app 能同时看到两边,和 ProgressPort
-一样由 app 实现并注入。
+    母版图 bytes ──①图生 3D──▶ 3D 模型 ──(人工确认)──▶ ②自动绑骨 ──▶ 绑骨模型 bytes
+                                                                        │
+                                                              存进 CharacterAssetStore
+                                                                        │
+                            server 下次直接取出来喂 CharacterGeneratorPort.generate_rendered
+
+**渲帧那一段不在这里**,它在 ai_engine 的 ``RenderFrameStrategy`` 里(纯本地、零 API
+成本)。这个划分是 #122 评审定的:早先三段捆在一个 ``Render3DPort`` 后面,结果"哪一步
+花钱"看不出来,而且那个 port 上还挂了个 ``can_serve`` 去回答"这个造型有没有 3D 资产" ——
+那份数据在 DB 里,引擎答不了。现在花钱的两段留在 server,引擎只管渲。
 
 ━━ 为什么要有 CharacterAssetStore ━━
 
 三段的成本结构完全不同:
-  ① 图生 3D    按积分   **每角色一次性**
-  ② 自动绑骨    10 积分  **每角色一次性**
+  ① 图生 3D    按积分   **每造型一次性**
+  ② 自动绑骨    10 积分  **每造型一次性**
   ③ 渲帧       零 API   每动作、每朝向都免费
 
-没有角色级落点,①② 就得**每个动作重跑一次**:一个角色做 10 个动作,成本从"一次性 ¥3.6"
+没有落点,①② 就得**每个动作重跑一次**:一个造型做 10 个动作,成本从"一次性 ¥3.6"
 变成"¥3.6 × 10",差一个数量级(实测,见 1024XEngineer/Windup#121)。所以这个 store
 不是"存得整齐一点",它是这条路线成本优势能否成立的开关。
 
-━━ 落点选型(这是本文件唯一需要评审拍板的决定)━━
+━━ 键取造型 id ━━
 
-按 #122 的 D3 默认「provider 自持存储」实现:落点由本层自己管,**ai_engine 继续只认
-bytes、不碰存储**,``CharacterCard`` 也**不新增 3D 资产字段**。
+**键是造型(outfit)的稳定 id,不是角色 id、也不是 ``CharacterCard.master_ref``。**
 
-键取 ``(master_ref, version)`` 而不是 ``name``:
-  - ``name`` 不唯一(落库时甚至可以为 null,#123 记过),拿它当键会让两个同名角色互相
-    复用彼此的模型 —— 那是"看起来省钱、实际出错角色"的静默错误;
-  - port docstring 早写明渲染出帧路线该靠 ``master_ref`` / ``version`` 定位 3D 资产;
-  - ``master_ref`` 为空时**不缓存也不假装缓存**:此时 :meth:`Render3DAdapter.can_serve`
-    返回 False,而 ``derive_frames`` 直接抛 —— 否则每个动作都重付 ①②,而调用方
-    看到的只是"有点慢",不会发现自己在按动作付角色级的钱。
+- 挂造型一级是 #121 定的:外观挂在造型上(每个 outfit 自带 ``preview_url``),角色级只有
+  一张参考图,同一角色的不同造型共用不了一个 3D 模型。
+- 早先这里用 ``(card.master_ref, card.version)`` 当键。那条路**本身就是断的**:
+  ``executor`` 建 ``CharacterCard`` 时只给了 name 和 desc,``master_ref`` 从没被赋过值,
+  于是键恒为 None、``can_serve`` 恒 False,三渲二走真实 server 路径**永不可达** ——
+  而单元测试全绿(测试直接构造带 master_ref 的 card)。同一种病在 #241 也犯过一次
+  (前端传 ``custom_prompt``、后端收下、丢进没人读的 ``card.desc``)。
+  现在键由调用方显式传入,不从 card 反查,``master_ref`` 也不再被任何代码依赖。
+- 不用 ``name``:它不唯一(落库时甚至可以为 null,#123 记过),拿它当键会让两个同名角色
+  互相复用彼此的模型 —— 那是"看起来省钱、实际出错角色"的静默错误。
 
 ━━ 生成出来的 3D 模型要先给人看过才往下走 ━━
 
@@ -44,35 +52,14 @@ import logging
 import pathlib
 from typing import Protocol, runtime_checkable
 
-from windup_ai_engine.ports import ProgressPort, RenderedFrames
-from windup_common.models import ActionSpec, CharacterCard, Facing
+from windup_ai_engine.ports import ProgressPort
 from windup_framework.providers.render3d import (
-    RENDER_SIZE,
     AutoRigProvider,
     Model3DProvider,
     RiggedModel,
-    SpriteRenderProvider,
-    SpriteSheet,
 )
 
 logger = logging.getLogger(__name__)
-
-# Facing → 出帧台的朝向名。键名与前端导出模型的 ExportAction.sequences[].direction
-# 同域,不需要转换层。
-#
-# **这张表是实测定的,不是按方位名推的。** 2026-08-12 用一只四足角色真渲 8 朝向后逐张量:
-#   n(yaw=90°)  浅色像素占比 21.0%  ← 奶白胸腹与口鼻可见 = **正面**
-#   s(yaw=270°) 浅色像素占比  8.5%  ← 只见深色背与尾     = 背面
-#   两者主体像素 512334 / 512335,轮廓面积几乎相同(同一角色的正反面),所以只能靠内容分辨。
-# 我最初按"south = 朝观者"的直觉把 FRONT 写成 "s",那会交出一个**背朝观者**的序列。
-#
-# 这类错单元测试逮不到:朝向错了但帧数、时长、成色全部正常,没有任何一道会红 ——
-# 只能靠真渲一次并看图。改这张表之前请先渲一遍再量,别按方位名改回去。
-_FACING_TO_DIRECTION: dict[Facing, str] = {
-    Facing.SIDE: "e",     # yaw=0°,角色朝画面右(与出帧台 faces="right" 同口径,实测确认)
-    Facing.FRONT: "n",    # yaw=90°,身体正对观者(实测:浅色占比 21.0% vs 背面 8.5%)
-}
-
 
 @runtime_checkable
 class CharacterAssetStore(Protocol):
@@ -184,104 +171,61 @@ class LocalDirModelReview(ModelReviewGate):
         self._stem(key).with_suffix(".approved").write_text("ok", encoding="utf-8")
 
 
-class Render3DAdapter:
-    """组合三段 + 角色级资产复用,实现 ai_engine 的 ``Render3DPort``。"""
+class Render3DAssetBuilder:
+    """把①图生 3D + ②自动绑骨拼成"母版 → 该造型的绑骨模型",并落点复用。
+
+    **本类不渲帧。** 渲帧在 ai_engine 的 ``RenderFrameStrategy``(零 API 成本)。
+    """
 
     def __init__(
         self,
         model3d: Model3DProvider,
         autorig: AutoRigProvider,
-        renderer: SpriteRenderProvider,
         store: CharacterAssetStore,
         review: ModelReviewGate,
         *,
         may_build_assets: bool = False,
-        directions: int = 4,
-        material: str = "cel",
-        size: tuple[int, int] = RENDER_SIZE,
     ) -> None:
         self._model3d = model3d
         self._autorig = autorig
-        self._renderer = renderer
         self._store = store
         self._review = review
         self._may_build_assets = may_build_assets
-        self._directions = directions
-        self._material = material
-        self._size = size
 
-    # ── 键 ────────────────────────────────────────────────────────────────
-    @staticmethod
-    def _key(card: CharacterCard) -> str | None:
-        """``None`` = 这个角色没法安全缓存(见模块 docstring 里为什么不退化成用 name)。"""
-        ref = (card.master_ref or "").strip()
-        return f"{ref}@{card.version}" if ref else None
+    def get(self, outfit_key: str) -> bytes | None:
+        """已就绪的绑骨模型;``None`` = 还没有。**不花钱、无副作用。**
 
-    # ── Render3DPort ─────────────────────────────────────────────────────
-    def can_serve(self, card: CharacterCard) -> bool:
-        """资产已就绪,**或者**本实例获准现建。不花钱、无副作用。
-
-        ``may_build_assets=False``(默认)时只认存量。这不是保守,是因为建资产是
-        **每角色 ¥3.60**(图生 3D 20 积分 + 绑骨 10 积分 × ¥0.12)的按次计费,
-        不该由一个 web 请求顺手触发 —— 那正是"无人值守烧钱"。默认档下新角色要先
-        由人显式授权建资产(见 executor 里的 ``WINDUP_RENDER3D_ALLOW_SPEND``),
-        路线选择那一步会给出可读的拒绝理由,而不是悄悄扣一笔钱。
+        这是 server 决定"这次调 generate 还是 generate_rendered"时用的那个判断
+        (#122:判据由 server 出,不挂在引擎的 port 上)。
         """
-        key = self._key(card)
-        if not key:
-            return False        # 没 master_ref 连缓存都做不了,现建也没意义(见 derive_frames)
-        return self._store.get(key) is not None or self._may_build_assets
+        return self._store.get(outfit_key) if outfit_key else None
 
-    def derive_frames(
-        self,
-        card: CharacterCard,
-        action: ActionSpec,
-        master: bytes,
-        progress: ProgressPort,
-    ) -> RenderedFrames:
-        key = self._key(card)
-        if not key:
+    def ensure(self, outfit_key: str, master: bytes, progress: ProgressPort) -> bytes:
+        """取该造型的绑骨模型;没有且获准时才现建。
+
+        建一次约 ¥3.60(图生 3D 20 积分 + 绑骨 10 积分 × ¥0.12),**每造型一次性**。
+        ``may_build_assets=False``(默认)时不建 —— 一个 web 请求不该顺手扣这笔钱,
+        那正是"无人值守烧钱"。要放开就显式设 ``WINDUP_RENDER3D_ALLOW_SPEND``。
+        """
+        if not outfit_key:
             raise ValueError(
-                f"角色 {card.name!r} 没有 master_ref,无法定位/复用角色级 3D 资产。"
-                "继续跑会让图生 3D + 绑骨按动作重复计费(每角色一次性 → 每动作一次),"
-                "故在花钱之前停下。请先让 server 把母版落存储并回填 master_ref。"
+                "缺少造型 id,无法定位/复用该造型的 3D 资产。继续跑会让图生 3D + 绑骨"
+                "按动作重复计费(每造型一次性 → 每动作一次),故在花钱之前停下。"
             )
-
-        rigged_bytes = self._store.get(key)
-        if rigged_bytes is None:
-            if not self._may_build_assets:
-                # can_serve 本该把这种情况挡在前面;走到这里说明调用方绕过了预检。
-                # 仍然要拦 —— 这一支是**每角色 ¥3.60** 的按次计费,不能靠"上游会检查"兜着。
-                raise ValueError(
-                    f"角色 {card.name!r} 的 3D 资产未就绪,而本实例未获准建(建一次约 ¥3.60:"
-                    "图生 3D 20 积分 + 绑骨 10 积分)。要现建请显式授权花钱,"
-                    "或先把资产备好,或改走 video_i2v。"
-                )
-            # 只有这一支会花钱,且**每角色只会走一次**。
-            rigged_bytes = self._build_character_assets(card, master, key, progress)
-
-        # ③ 渲帧:纯本地,零 API 成本。多朝向在这里一次性拿到。
-        want = _FACING_TO_DIRECTION.get(action.facing, "e")
-        progress.step(
-            "derive", 1, 3,
-            f"渲 {self._directions} 朝向 × {action.n_frames} 帧"
-            f"({self._size[0]}×{self._size[1]},材质 {self._material})",
-        )
-        sheet: SpriteSheet = self._renderer.render(
-            rigged_bytes,
-            clip=action.action.value,
-            directions=self._directions,
-            frames=action.n_frames,
-            size=self._size,
-            material=self._material,
-        )
-        return self._pick(sheet, want, action)
+        rigged_bytes = self._store.get(outfit_key)
+        if rigged_bytes is not None:
+            return rigged_bytes
+        if not self._may_build_assets:
+            raise ValueError(
+                f"造型 {outfit_key!r} 的 3D 资产未就绪,而本实例未获准建(建一次约 ¥3.60:"
+                "图生 3D 20 积分 + 绑骨 10 积分)。要现建请显式授权花钱,"
+                "或先把资产备好,或改走 video_i2v。"
+            )
+        return self._build(outfit_key, master, progress)
 
     # ── 内部 ─────────────────────────────────────────────────────────────
-    def _build_character_assets(
-        self, card: CharacterCard, master: bytes, key: str, progress: ProgressPort
-    ) -> bytes:
-        """① 图生 3D →(人工确认)→ ② 绑骨。**按次计费,每角色一次性。**
+    def _build(self, key: str, master: bytes, progress: ProgressPort) -> bytes:
+        """① 图生 3D →(人工确认)→ ② 绑骨。**按次计费,每造型一次性。**
 
         中间那道人工确认是硬停点,原因见 :class:`ModelReviewGate`:模型不可事后修改,
         坏模型只能重生成,所以要在**花绑骨的钱之前**让人看一眼。
@@ -292,14 +236,14 @@ class Render3DAdapter:
         # 这里,若不存,每次都要重付一遍图生 3D 的钱,而停点的本意恰恰是省钱。
         model = self._store.get(raw_key)
         if model is None:
-            progress.step("derive", 0, 3, "角色级资产未就绪:图生 3D(按次计费)")
+            progress.step("assets", 0, 2, "造型级 3D 资产未就绪:图生 3D(按次计费)")
             model = self._model3d.image_to_3d(master, want="GLB")
             self._store.put(raw_key, model)
             logger.info("图生 3D 产物已落点 key=%s bytes=%d", raw_key, len(model))
 
         where = self._review.submit(key, model, "GLB")
         if not self._review.is_approved(key):
-            progress.step("derive", 0, 3, "3D 模型已生成,等人工确认后才继续绑骨")
+            progress.step("assets", 1, 2, "3D 模型已生成,等人工确认后才继续绑骨")
             raise ModelAwaitingReview(
                 key,
                 where,
@@ -309,28 +253,10 @@ class Render3DAdapter:
                 "不合格则删掉待审模型重新生成 —— 混元的模型改不动,只能重生成",
             )
 
-        progress.step("derive", 0, 3, "模型已确认,自动绑骨(按次计费,10 积分)")
+        progress.step("assets", 1, 2, "模型已确认,自动绑骨(按次计费,10 积分)")
         rigged: RiggedModel = self._autorig.rig(model, want="GLB")
 
         # 存的是**绑骨后**的产物:它是渲帧真正要的那个,存中间的 model 等于下次还得再绑一次。
         self._store.put(key, rigged.data)
-        logger.info("角色级 3D 资产已落点 key=%s fmt=%s", key, rigged.fmt)
+        logger.info("造型级 3D 资产已落点 key=%s fmt=%s", key, rigged.fmt)
         return rigged.data
-
-    @staticmethod
-    def _pick(sheet: SpriteSheet, want: str, action: ActionSpec) -> RenderedFrames:
-        """取请求朝向那一条;把"其实渲了几个朝向"如实带出去。"""
-        available = tuple(s.direction for s in sheet.sequences)
-        chosen = next((s for s in sheet.sequences if s.direction == want), None)
-        if chosen is None:
-            # 不静默换一个朝向交出去:朝向错了的序列帧在引擎里就是角色朝反方向走,
-            # 而帧数、时长、成色全都正常,没有任何一道会红。
-            raise ValueError(
-                f"出帧台没有产出朝向 {want}(动作 {action.action.value}、facing "
-                f"{action.facing.value});实际产出 {available}。"
-            )
-        return RenderedFrames(
-            frames=list(chosen.frames),
-            direction=chosen.direction,
-            available_directions=available,
-        )

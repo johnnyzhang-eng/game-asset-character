@@ -25,7 +25,6 @@ from windup_ai_engine.ports import (
     CharacterGeneratorPort,
     GeneratedAction,
     ProgressPort,
-    RouteUnavailable,
 )
 from windup_ai_engine.postprocess import align_bottom_center, frame_durations
 from windup_ai_engine.slicing import dead_frame_indices, loop_seam, motion_scale
@@ -101,48 +100,77 @@ class CharacterGenerator(CharacterGeneratorPort):
         facts = check_master(master, canvas)
         progress.step("precheck", _TICK_PRECHECK, _TOTAL, facts.note())
 
-        # ② 选路线。默认按 ROUTE_MATRIX(动作类型 → 路线);调用方可用 ActionSpec.route
-        # 显式指定 —— 三渲二这条不能只由动作类型决定,还取决于该角色有没有 3D 资产、
-        # 以及这次要单帧质量还是要多朝向一致,那是 server 才知道的事(见 strategy.base
-        # 模块 docstring 与 ActionSpec.route 那段)。
-        route = action.route or ROUTE_MATRIX[action.action]
+        # ② 选路线(架构决策矩阵)。装配表里没有 = 该路线未实现,在边界上炸,
+        # 不要让"看着成功、内容是空"的结果流到 server 去落库。
+        #
+        # 三渲二**不经过这里**:它由 server 读 DB 判断该造型有没有 3D 资产后直接调
+        # generate_rendered(#122)。ROUTE_MATRIX 因此仍然只映射"由动作物理性质唯一
+        # 决定"的那两条,它的隐含前提不被破坏(见 strategy.base 模块注释)。
+        route = ROUTE_MATRIX[action.action]
         # .value 而不是枚举本身:Python 3.11+ 的 str-mixin 枚举 __format__ 会给出
         # "ActionType.WALK",这串字最终是用户看到的进度文案(3.12.13 实测)。
-        explicit = " (调用方指定)" if action.route else ""
-        progress.step(
-            "route", _TICK_ROUTE, _TOTAL,
-            f"{action.action.value} → {route.value}{explicit}",
+        progress.step("route", _TICK_ROUTE, _TOTAL, f"{action.action.value} → {route.value}")
+        strategy = self._pick(route, action)
+
+        # ③ 生成帧(交给 strategy —— 串联)
+        frames = strategy.derive(
+            card, action, master, _BandProgress(progress, _DERIVE_FROM, _DERIVE_TO)
         )
+        return self._finish(frames, action, route, progress, canvas)
+
+    def generate_rendered(
+        self,
+        card: CharacterCard,
+        action: ActionSpec,
+        rigged_model: bytes,
+        progress: ProgressPort,
+        canvas: tuple[int, int] | None = None,
+    ) -> GeneratedAction:
+        """三渲二入口。见 ``ports.CharacterGeneratorPort.generate_rendered``。
+
+        **没有母版预检那一道。** 不是漏了:``check_master`` 判的是"这张图能不能拿去
+        生成"(尺寸 / 比例 / 空图 / 极端留白),而这条路线的输入是 3D 模型,那些判据一条
+        都不适用。模型自己的预检在 server 建资产那一步做(``providers.render3d.check_model``),
+        位置也对 —— 那才是花钱的地方,这里已经不花钱了。
+        """
+        route = GenRoute.RENDER_3D
+        progress.step("route", _TICK_ROUTE, _TOTAL, f"{action.action.value} → {route.value}")
+        strategy = self._pick(route, action)
+        frames = strategy.derive(
+            card, action, rigged_model, _BandProgress(progress, _DERIVE_FROM, _DERIVE_TO)
+        )
+        return self._finish(frames, action, route, progress, canvas)
+
+    # ── 两个入口共用的部分 ────────────────────────────────────────────────
+    def _pick(self, route: GenRoute, action: ActionSpec) -> DerivationStrategy:
         strategy = self._by_route.get(route)
         if strategy is None:
             raise NotImplementedError(
                 f"动作 {action.action.value} 分流到 {route.value}，但未注入该路线的 strategy。"
                 f"已装配：{sorted(r.value for r in self._by_route)}。"
             )
-        # 路线装配了、但对**这个角色**还不能用(目前只有三渲二会这样:缺该角色的 3D 资产)。
-        # **不静默回退到别的路线**:回退等于"用户点了三渲二、拿到一段 i2v、且没有任何提示",
-        # 而两条路线的画风、成本、多朝向能力都不同,调用方会照着错误的前提做后续决定。
-        # 这一道在花钱之前(supports 约定不花钱无副作用)。
-        if not strategy.supports(card):
-            raise RouteUnavailable(
-                route.value,
-                f"角色 {card.name!r}(version={card.version})尚不具备该路线的前置资产。"
-                "三渲二要先有该角色的角色级 3D 资产(图生 3D + 绑骨,每角色一次性);"
-                "请先备好资产,或改走 video_i2v。",
-            )
+        return strategy
 
-        # ③ 生成帧(交给 strategy —— 串联)
-        frames = strategy.derive(
-            card, action, master, _BandProgress(progress, _DERIVE_FROM, _DERIVE_TO)
-        )
+    def _finish(
+        self,
+        frames: list[bytes],
+        action: ActionSpec,
+        route: GenRoute,
+        progress: ProgressPort,
+        canvas: tuple[int, int] | None,
+    ) -> GeneratedAction:
+        """出帧之后的公共尾段:帧数对账 → 脚线对齐 → 量成色 → 出参。
 
-        # ③.5 帧数必须与契约相符。A2 把 n_frames 从 len(poses) 的推导值改成调用方直接声明的
+        抽出来给两个入口共用,不是为了少写几行:这几道闸("帧数必须与契约相符"、
+        "空帧要炸"、"成色必须如实上报")是**对所有路线**的约束,复制一份就会有一天
+        只在一条路线上被改。
+        """
+        # 帧数必须与契约相符。A2 把 n_frames 从 len(poses) 的推导值改成调用方直接声明的
         # 承诺,而抽帧那两个函数都会**静默少给**:slicing.pick_cycle / pick_oneshot 在
         # `len(dense) <= n`(或动作区间比 n 短)时 return frames/span,长度不足且不报错
         # (2026-08-08 读码复核)。少给的后果不是崩溃而是"短一截的动作":时长表由
         # frame_durations(…, len(frames)) 现算,长度自洽,server 看不出异常,用户拿到
         # 一段步子没走完的循环。故在此对账 —— 钱已经花了,但至少不让错产物流下去。
-        # 放在 generator 而不是某个 strategy 里:这样将来任何新路线都受同一条约束。
         if len(frames) != action.n_frames:
             raise ValueError(
                 f"{route.value} 要 {action.n_frames} 帧,实际产出 {len(frames)} 帧。"
@@ -150,14 +178,13 @@ class CharacterGenerator(CharacterGeneratorPort):
                 "请调小 n_frames 或加长视频。"
             )
 
-        # ④ 最后一公里:脚线对齐成原地序列帧(直接对齐到调用方要的画布尺寸)
+        # 最后一公里:脚线对齐成原地序列帧(直接对齐到调用方要的画布尺寸)
         aligned = self._lastmile(frames, progress, canvas)
 
-        # ⑤ 量交付成色。在**对齐之后**量,量的是用户真正会看到的那组帧:抠图 / 像素化 /
+        # 量交付成色。在**对齐之后**量,量的是用户真正会看到的那组帧:抠图 / 像素化 /
         # 对齐都会改像素,在中间任何一步量出来的数都描述不了交付物。
         quality = self._assess(aligned, action)
 
-        # ⑥ 出参:帧 + 逐帧时长 + 成色(上传 / 落库在 server 侧)
         progress.step(
             "package", _TICK_PACKAGE, _TOTAL,
             f"{len(aligned)} 帧 + 逐帧时长(动量 {quality.motion_scale:.2f},"

@@ -124,90 +124,6 @@ class GeneratedAction:
     quality: ActionQuality = field(kw_only=True)
 
 
-class RouteUnavailable(ValueError):
-    """选中的路线对**这个角色**还不能用(前置资产没就绪),在花钱之前抛。
-
-    与 :class:`MasterRejected` 分开,是因为两者给用户的**处置动作不同** ——
-    这条不是"换一张母版"能解决的(母版可能完全合格),而是"先把该角色的角色级 3D 资产
-    备好,或改走别的路线"。共用 ``MasterRejected`` 会让 server 翻出一句误导的文案,
-    用户照着换十张母版也不会好。
-
-    与 ``NotImplementedError`` 也分开:路线**已实现、已装配**,只是这个角色还没资产,
-    属于调用方输入层面的事(4xx),不是引擎装配坏了(5xx)。
-    """
-
-    def __init__(self, route: str, detail: str) -> None:
-        super().__init__(f"路线 {route} 对该角色不可用:{detail}")
-        self.route = route
-        self.detail = detail
-
-
-# ---- 三渲二(渲染出帧路线)的对外边界 ----
-@dataclass(frozen=True)
-class RenderedFrames:
-    """渲染出帧的产物:请求朝向的那条序列 + 这次实际能出的全部朝向。
-
-    ``frames`` 只给 ``ActionSpec.facing`` 对应的那一条,因为
-    :class:`GeneratedAction` 目前是单序列形状(``frames`` + 等长 ``durations``)。
-
-    ``available_directions`` 是**如实上报、不丢信息**:三渲二最大的杠杆正是"同模型同动作
-    只换相机方位角重渲 → 各朝向零 API 成本且天生一致",一次渲染往往已经把 4 / 8 个朝向都
-    算出来了。但现在的出参装不下多朝向,于是那些帧只能丢掉。把"本来有几个朝向"报上来,
-    是为了让这笔浪费**可见**,而不是假装它不存在 —— 多朝向出参的契约扩展见
-    1024XEngineer/Windup#122(D15)。
-    """
-
-    frames: list[bytes] = field(default_factory=list)     # 请求朝向的 RGBA PNG,按播放序
-    direction: str = ""                                    # 这条序列的朝向(e/ne/n/…)
-    available_directions: tuple[str, ...] = ()             # 本次渲染实际可出的全部朝向
-
-
-@runtime_checkable
-class Render3DPort(Protocol):
-    """三渲二:母版 → 图生 3D → 自动绑骨 → 套预设动作 → 渲 2D 序列帧。
-
-    **三段的成本结构完全不同,这决定了本接口为什么长这样:**
-      - 图生 3D:按积分,**每角色一次性**
-      - 自动绑骨:10 积分/次,**每角色一次性**
-      - 渲帧:纯本地 WebGL,**零 API 成本**,每动作、每朝向都免费
-
-    所以"角色级派生资产(3D 模型 / 骨架 / 挂点)存哪儿"不是整齐问题而是成本问题:有落点时
-    一个角色做 8 个动作与做 1 个动作的云成本几乎一样;没落点则线性翻 8 倍(实测差一个数量
-    级,见 1024XEngineer/Windup#121)。
-
-    **本接口按 D3 的「provider 自持存储」定:** 角色级资产的存放与复用由实现方自己管,
-    ai_engine 继续只认 bytes、不碰存储。这样分层契约不用破,且与 ``VideoProvider`` 已有的
-    同型先例一致(它的 docstring 明写"入参恒为 bytes;有的供应商只吃公网 URL,那是该
-    provider 自己的适配问题")。因此 :class:`windup_common.models.CharacterCard`
-    **不需要新增 3D 资产字段** —— 映射由实现方按角色身份自己维护。
-    Refs 1024XEngineer/Windup#121 #122。
-    """
-
-    def can_serve(self, card: CharacterCard) -> bool:
-        """这条路线现在能不能给这个角色出帧(不花钱、不产生副作用)。
-
-        **不是"资产是否已存在"**,而是两者取或:资产已就绪,**或者**实现方获准现建
-        (图生 3D + 绑骨要花钱,见 :meth:`derive_frames`)。两者合成一个判断,是因为
-        调用方要的答案只有一个 —— "点这条路线会不会白点"。
-
-        名字刻意不叫 ``has_character_assets``:那样命名会诱使实现只查存量,于是"获准
-        花钱、可以现建"的情形被判成不可用,路线明明能跑却被拒。反过来,若实现只在这里
-        返回"资产存在",而 ``derive_frames`` 又会自己现建,那就变成"预检说不行、实跑却
-        花了钱",两种都是错的。
-        """
-        ...
-
-    def derive_frames(
-        self,
-        card: CharacterCard,
-        action: ActionSpec,
-        master: bytes,
-        progress: ProgressPort,
-    ) -> RenderedFrames:
-        """出这个动作的帧。角色级资产已就绪时应只做零成本的渲帧那一段。"""
-        ...
-
-
 # ---- ai_engine 暴露给 server(server 调用的唯一入口)----
 @runtime_checkable
 class CharacterGeneratorPort(Protocol):
@@ -220,8 +136,11 @@ class CharacterGeneratorPort(Protocol):
             在 ai_engine 下零命中(2026-08-08 复核)。这不是遗漏:i2v 的角色身份完全由
             ``master`` 这张母版图像承载,身份描述再写一遍反而会和母版打架。本参数是给
             未实现路线预留的入参:逐帧图生图(#53)要靠 ``name`` / ``desc`` 在每帧提示词里
-            锁一致性,渲染出帧(#81 #122)要靠 ``master_ref`` / ``version`` 定位 3D 资产。
-            **调用方不要指望改 card 能影响视频路线的产出。**
+            锁一致性。**调用方不要指望改 card 能影响视频路线的产出。**
+
+            注:这里曾写着"渲染出帧要靠 ``master_ref`` / ``version`` 定位 3D 资产"。
+            **已作废**(#122):3D 资产的定位改由 server 读 DB(造型上的字段)完成,
+            引擎侧不再从 card 反查资产 —— 见 :meth:`generate_rendered`。
         action: 动作规格(类型 / 帧数 / 风格化 / 朝向)。视频路线的实际入参在这里:
             ``action``、``n_frames``、``facing``、``stylize`` 等。
         master: 定妆母版图 bytes(server 从 reference_image_url 取)。**视频路线的
@@ -253,3 +172,32 @@ class CharacterGeneratorPort(Protocol):
         progress: ProgressPort,
         canvas: tuple[int, int] | None = None,
     ) -> GeneratedAction: ...
+
+    def generate_rendered(
+        self,
+        card: CharacterCard,
+        action: ActionSpec,
+        rigged_model: bytes,
+        progress: ProgressPort,
+        canvas: tuple[int, int] | None = None,
+    ) -> GeneratedAction:
+        """三渲二:拿**已绑骨的 3D 模型**套预设动作、渲成 2D 序列帧。
+
+        与 :meth:`generate` 并列而不是新开一个 port,是 #122 里定的:server 调
+        ai_engine 只该有一个入口,``generate`` 对应视频截帧、本方法对应三渲二。
+
+        **调哪个由 server 决定,引擎不选。** 判据是"这个造型有没有 3D 资产",那份数据
+        在 DB 里(``character_data.outfits[].model_3d_url``),引擎看不到也不该看到 ——
+        所以本方法**不提供**"能不能用"的预查询,拿不到模型的情形在 server 就被挡住了。
+        这一条是 #122 评审定的:早先的设计在 port 上挂了一个 ``can_serve``,那等于让
+        引擎替 server 回答一个只有 DB 才知道的问题。
+
+        ``rigged_model`` 是 bytes 而不是 URL / 存储句柄:ai_engine 的分层契约是只吃
+        bytes、不碰存储(与 ``master`` 同理)。取模型、缓存、以及**建**模型那笔按次计费
+        (图生 3D + 绑骨,每角色一次性)全部在 server 侧,不在这条出帧路径上。
+
+        Raises:
+            NotImplementedError: 没注入 ``GenRoute.RENDER_3D`` 的 strategy。
+            ValueError: 模型渲不出请求朝向 / 产出帧数对不上契约。
+        """
+        ...
