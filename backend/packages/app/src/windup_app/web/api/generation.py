@@ -22,7 +22,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import event
 from sqlalchemy.orm import Session
 
@@ -31,7 +31,7 @@ from windup_common.exceptions import BizException
 from windup_common.result import Response
 from windup_framework.db import get_session
 
-from windup_app.server.character.model import Character
+from windup_app.server.character.model import Character, CharacterData
 from windup_app.server.orchestrator import task_repo
 from windup_app.server.orchestrator.service import service as generation_service
 from windup_app.server.orchestrator.model import (
@@ -174,6 +174,10 @@ class CharacterActionGenerateRequest(BaseModel):
     reference_image_urls: list[str] = Field(default_factory=list)
     # 同上:帧数决定抽帧与逐帧抠图的工作量,上界 64 已远超引擎能出的有效周期长度。
     num_frames: int = Field(default=16, ge=1, le=64)
+    # 这次动作属于哪个造型。给了才可能走三渲二 —— 3D 资产挂在造型一级(#121)。
+    # 不给则照旧走 i2v(向后兼容:前端接上之前所有调用都是这样)。
+    # 让**所有**动作生成都按造型定位外观是 #253,不在本改动范围内。
+    outfit_id: str | None = None
 
     @model_validator(mode="after")
     def require_custom_prompt(self):
@@ -244,6 +248,33 @@ def _get_character_or_raise(
     return character
 
 
+def _outfit_model_3d_url(character: Character, outfit_id: str | None) -> str | None:
+    """这个造型有没有绑骨 3D 模型 —— **三渲二的唯一判据**(#122)。
+
+    判据放在这里(读 DB)而不是做成 ai_engine port 上的一个查询:"有没有 3D 资产"
+    只有 DB 知道,让引擎回答它,要么引擎去反查存储(破它"只吃 bytes"的分层),
+    要么它只能猜。
+
+    没给 ``outfit_id`` 时返回 None(照旧走 i2v),**不去猜"那就用第一个造型吧"**:
+    猜错的后果是拿另一个造型的 3D 模型渲出这次的动作 —— 角色穿着错的衣服,而帧数、
+    时长、成色全部正常,没有任何一道会红。这正是本仓反复吃过的静默错误形态。
+    """
+    if not outfit_id:
+        return None
+    try:
+        data = CharacterData.model_validate(character.character_data or {})
+    except ValidationError:
+        # 结构对不上就当没有资产:这一步只决定"走哪条路线",不该因为 character_data
+        # 里某个无关字段脏了就让整个动作生成起不来。走 i2v 仍然出得了帧。
+        logger.warning("character %s 的 character_data 解析失败,三渲二判据按无资产处理",
+                       character.id)
+        return None
+    outfit = next((o for o in data.outfits if o.id == outfit_id), None)
+    if outfit is None:
+        raise BizException(f"造型 {outfit_id!r} 不属于该角色", code=BizCode.NOT_FOUND)
+    return (outfit.model_3d_url or "").strip() or None
+
+
 def _validate_project_size(project: Project, width: int, height: int) -> None:
     """校验输入尺寸与项目约束是否一致;不一致则抛异常。"""
     if width != project.sprite_width or height != project.sprite_height:
@@ -302,7 +333,7 @@ def submit_action_generation(
     """提交角色动作生成任务:建 PENDING 记录立即返回,实际生成后台跑。"""
     user_id = request.state.current_user.id
     _get_project_or_raise(session, body.project_id, user_id)
-    _get_character_or_raise(session, body.character_id, body.project_id)
+    character = _get_character_or_raise(session, body.character_id, body.project_id)
     input_data = CharacterActionInput(
         character_id=body.character_id,
         action_type=body.action_type,
@@ -310,6 +341,10 @@ def submit_action_generation(
         reference_video_url=body.reference_video_url,
         reference_image_urls=body.reference_image_urls,
         num_frames=body.num_frames,
+        outfit_id=body.outfit_id,
+        # 路线选择在这里定死并写进入参,而不是留给编排层现查:这样"这次走的哪条路线"
+        # 在任务入参上就是可见的,排查时不用去猜当时 DB 是什么状态。
+        model_3d_url=_outfit_model_3d_url(character, body.outfit_id),
     )
     task = generation_service.generate_character_action(
         session, user_id=user_id, project_id=body.project_id, input=input_data,

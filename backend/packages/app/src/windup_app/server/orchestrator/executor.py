@@ -159,12 +159,14 @@ class ActionTaskExecutor:
         generator: CharacterGeneratorPort | None = None,
         upload: Callable[[bytes], str] | None = None,
         fetch_master: Callable[[CharacterActionInput], bytes] | None = None,
+        fetch_model3d: Callable[[str], bytes] | None = None,
         fetch_constraints: Callable[[Session, int | None], ProjectConstraints] | None = None,
         session_factory: Callable[[], Session] | None = None,
     ) -> None:
         self._generator = generator          # None → 懒加载真实装配
         self._upload = upload                # None → 真实对象存储上传
         self._fetch_master = fetch_master    # None → 下载 reference_image_urls[0]
+        self._fetch_model3d = fetch_model3d  # None → 下载 input.model_3d_url
         self._fetch_constraints = fetch_constraints  # None → 查 project 全局约束
         self._session_factory = session_factory  # None → SessionLocal
 
@@ -222,7 +224,6 @@ class ActionTaskExecutor:
         """
         if cons.directions > 1:
             logger.info("项目要求 %s 方向,MVP 先出主方向(多方向待扩展)", cons.directions)
-        master = (self._fetch_master or self._download_master)(input)
         # 视频 i2v 没有独立的 style reference 字段,风格约束走提示词文字
         desc_parts = [input.custom_prompt or ""]
         if cons.style:
@@ -236,9 +237,31 @@ class ActionTaskExecutor:
             stylize=cons.stylize,
         )
         progress: ProgressPort = _LogProgress()
-        generated = self._get_generator().generate(
-            card, action, master, progress, canvas=(cons.sprite_w, cons.sprite_h)
-        )
+        canvas = (cons.sprite_w, cons.sprite_h)
+
+        # ── 路线选择:这一步是 server 的事,不是引擎的(#122)────────────────
+        #
+        # 判据就一条:这个造型有没有绑骨 3D 模型(character_data.outfits[].model_3d_url,
+        # 由 web 层读出来放进 input)。有 → 三渲二;没有 → 照旧 i2v。
+        #
+        # **不静默回退。** 拿到了 model_3d_url 却下载不下来 / 渲不出来,就报错,不改走
+        # i2v —— 两条路线的画风、成本、多朝向能力都不同,悄悄换一条等于让调用方拿着
+        # 错误的前提做后续决定,而帧数、时长、成色全都正常,没有任何一道会红。
+        model_url = (input.model_3d_url or "").strip()
+        if model_url:
+            rigged = (self._fetch_model3d or self._download_model3d)(model_url)
+            logger.info(
+                "[gen] 造型 %s 有 3D 资产(%d bytes),走三渲二",
+                input.outfit_id or "?", len(rigged),
+            )
+            generated = self._get_generator().generate_rendered(
+                card, action, rigged, progress, canvas=canvas
+            )
+        else:
+            master = (self._fetch_master or self._download_master)(input)
+            generated = self._get_generator().generate(
+                card, action, master, progress, canvas=canvas
+            )
 
         upload = self._upload or self._upload_frame
         frames = [
@@ -255,7 +278,6 @@ class ActionTaskExecutor:
             from windup_ai_engine.impl import CharacterGenerator
             from windup_ai_engine.strategy.concrete import (
                 PerFrameStrategy,
-                RenderFrameStrategy,
                 VideoFrameStrategy,
             )
             from windup_common.models import GenRoute
@@ -277,7 +299,7 @@ class ActionTaskExecutor:
             strategies = {
                 GenRoute.VIDEO_I2V: VideoFrameStrategy(video, matte),
                 GenRoute.PER_FRAME: PerFrameStrategy(image, matte),
-                GenRoute.RENDER_3D: RenderFrameStrategy(self._build_render3d()),
+                GenRoute.RENDER_3D: self._build_render3d(),
             }
             missing = set(GenRoute) - set(strategies)
             if missing:
@@ -288,50 +310,30 @@ class ActionTaskExecutor:
             self._generator = CharacterGenerator(strategies)
         return self._generator
 
-    def _build_render3d(self):
-        """装三渲二那三段 + 角色级资产落点。
+    @staticmethod
+    def _build_render3d():
+        """装三渲二的**渲帧**那一段。纯本地(node + playwright + three.js),零 API 成本。
 
-        三段全部懒构造:腾讯那两段要凭证、出帧那段要 node + playwright + three.js,
-        而**装配发生在每个动作任务的入口**——在这里就要齐,会让本来走 i2v 的任务也因为
-        三渲二的环境没配好而起不来。真正的缺件在被请求时才该显形。
+        懒构造:出帧台要 node 和浏览器,而装配发生在**每个动作任务的入口** —— 在这里就
+        要齐,会让本来走 i2v 的任务也因为出帧台环境没配好而起不来。真正的缺件在被请求时
+        才该显形。
 
-        落点默认走本地目录(``WINDUP_RENDER3D_ASSET_DIR``,缺省 ``./.windup/render3d``)。
-        **这个目录必须挂持久卷** —— 落在容器可写层里,每次重启都要重付一遍图生 3D +
-        绑骨(每角色一次性 → 每次部署一次)。多副本部署应换对象存储实现,同一个 Protocol
-        换注入即可,等 #121 拍板后做。
+        **图生 3D 与绑骨那两段不在这里。** 它们按次计费、每造型一次性,由
+        ``render3d_assets.Render3DAssetBuilder`` 在动作生成的请求路径**之外**做
+        (还有一道人工确认停点),产物 URL 落在 ``outfits[].model_3d_url`` 上。
+        早先三段捆在一个 Render3DPort 后面,结果一个 web 请求就能顺手扣掉 ¥3.60。
         """
-        import os
-        import pathlib
+        from windup_ai_engine.strategy.concrete import RenderFrameStrategy
+        from windup_framework.providers.render3d import LocalSpriteRenderProvider
 
-        from windup_app.server.orchestrator.render3d_adapter import (
-            LocalDirAssetStore,
-            LocalDirModelReview,
-            Render3DAdapter,
-        )
-        from windup_framework.providers.render3d import (
-            LocalSpriteRenderProvider,
-            TencentAutoRigProvider,
-            TencentCosModelUploader,
-            TencentModel3DProvider,
-        )
+        return RenderFrameStrategy(LocalSpriteRenderProvider())
 
-        root = pathlib.Path(os.getenv("WINDUP_RENDER3D_ASSET_DIR", ".windup/render3d"))
-        # 建角色级资产是**每角色 ¥3.60** 的按次计费(图生 3D 20 积分 + 绑骨 10 积分 ×
-        # ¥0.12)。默认**不授权** —— 一个 web 请求不该顺手扣这笔钱,那正是无人值守烧钱。
-        # 默认档下:已有资产的角色照常出帧(渲帧零成本),新角色则在路线选择那一步被
-        # 明确拒绝并给出理由,而不是悄悄扣钱。要放开就显式设这个环境变量。
-        allow_spend = os.getenv("WINDUP_RENDER3D_ALLOW_SPEND", "").lower() in ("1", "true", "yes")
-        uploader = TencentCosModelUploader()
-        return Render3DAdapter(
-            model3d=TencentModel3DProvider(allow_spend=allow_spend),
-            autorig=TencentAutoRigProvider(uploader, allow_spend=allow_spend),
-            renderer=LocalSpriteRenderProvider(),
-            store=LocalDirAssetStore(root),
-            # 生成的 3D 模型要先给人看过点头才继续绑骨(混元模型改不动,坏了只能重生成)。
-            # 待审模型落在 review/ 下,人旋转着看完手动放行。
-            review=LocalDirModelReview(root / "review"),
-            may_build_assets=allow_spend,
-        )
+    def _download_model3d(self, url: str) -> bytes:
+        """取该造型的绑骨 3D 模型。走 ``fetch_own_media`` —— 与母版同一条受限通路
+        (只允许本站对象存储的域名,防 SSRF)。模型动辄二三十 MB,但和母版一样是
+        **一次性下载、进内存、喂引擎**,不落 ai_engine 的存储(它只吃 bytes)。
+        """
+        return fetch_own_media(url)
 
     def _download_master(self, input: CharacterActionInput) -> bytes:
         if not input.reference_image_urls:

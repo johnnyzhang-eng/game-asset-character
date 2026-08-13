@@ -70,6 +70,19 @@ class CharacterActionInput:
     reference_video_url: str | None = None
     reference_image_urls: list[str] = field(default_factory=list)
     num_frames: int = 16
+    # ── 三渲二(#192)────────────────────────────────────────────────────
+    #
+    # 这次动作属于哪个造型。3D 资产挂在造型一级(#121),没有它就连"按造型定位资产"
+    # 都表达不出来。目前只被三渲二消费;把它推广成**所有**动作生成都按造型定位外观
+    # (即母版取 outfit.preview_url 而不是角色参考图)是 #253,不在本改动范围内。
+    outfit_id: str | None = None
+    # 该造型的绑骨 3D 模型 URL,由 server 从 character_data.outfits[].model_3d_url 读出来
+    # 带进来。**有值 = 这次走三渲二**;None = 照旧走 video_i2v。
+    #
+    # 为什么是 URL 而不是让编排层自己去查:与 reference_image_urls 同一口径 —— 取数在
+    # 上层做完,编排层只负责按已定的输入跑,这样"选了哪条路线"在入参上就是可见的,
+    # 不是埋在某个分支里的隐式判断。
+    model_3d_url: str | None = None
 
 
 # -- 出参（按任务类型细化，前端可直接回填 character 模块）------------------
