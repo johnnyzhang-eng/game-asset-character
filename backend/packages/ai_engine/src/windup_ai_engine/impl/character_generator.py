@@ -27,7 +27,12 @@ from windup_ai_engine.ports import (
     ProgressPort,
 )
 from windup_ai_engine.postprocess import align_bottom_center, frame_durations
-from windup_ai_engine.slicing import dead_frame_indices, loop_seam, motion_scale
+from windup_ai_engine.slicing import (
+    dead_frame_indices,
+    limb_motion,
+    loop_seam,
+    motion_scale,
+)
 from windup_ai_engine.strategy.base import (
     CYCLIC_ACTIONS,
     ROUTE_MATRIX,
@@ -210,6 +215,9 @@ class CharacterGenerator(CharacterGeneratorPort):
             motion_scale=motion_scale(frames),
             dead_frames=dead_frame_indices(frames),
             loop_seam=loop_seam(frames) if action.action in CYCLIC_ACTIONS else None,
+            # 分区动量:整幅指标的盲区补充。三渲二尤其需要 —— 自动绑骨漏认一条肢体时,
+            # 那块网格每帧同姿势,而 motion_scale 与死帧全部正常(2026-08-13 实测)。
+            limbs=limb_motion(frames),
         )
 
     def _lastmile(
