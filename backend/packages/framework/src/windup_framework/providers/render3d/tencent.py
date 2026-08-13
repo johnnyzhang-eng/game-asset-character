@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import time
 import urllib.error
 import urllib.request
@@ -44,6 +45,8 @@ __all__ = [
     "SpendNotAuthorizedError", "CREDITS", "CREDIT_PRICE_CNY", "PRESET_MOTIONS",
     "RIG_CREDITS", "MAX_IMAGE_BYTES", "VIEW_TYPES",
 ]
+
+logger = logging.getLogger(__name__)
 
 SERVICE = "ai3d"
 VERSION = "2025-05-13"
@@ -99,22 +102,30 @@ def _raise_for_error(response: Mapping) -> Mapping:
     raise TencentApiError(code or "UnknownError", msg)
 
 
-def _pick_artifact(files: list, want: str) -> Mapping:
-    """按请求的格式挑产物。挑不到就抛,**绝不退回 files[0]**。
+def _pick_artifact(files: list, want: str, *, strict: bool = True,
+                   job_id: str = "") -> tuple[Mapping, str]:
+    """按格式挑产物,返回 ``(产物, 它真实的格式)``。**绝不退回 files[0]**。
 
-    2026-08-05 实测:请求 GLB,``ResultFile3Ds[0]`` 是 FBX;当时按 ``.glb`` 存了下来,
-    Blender 报 "Bad glTF: json error: utf-8"、出帧台 waitForFunction 超时,排查方向被带到
-    "出帧管线坏了"。文件路径版的修法是改文件名让后缀别说谎;bytes 版**没有后缀可改**,
-    所以只能抛 —— 让调用方知道"你要的格式这次没给",而不是拿到一坨自称 GLB 的 FBX。
+    ``strict=True``:只认 ``want``。给返回裸 bytes 的调用方用 —— 那边没有字段能说明
+    真实格式,拿到 FBX 当 GLB 用会让下游报 Bad glTF,症状伪装成"出帧管线坏了"。
+
+    ``strict=False``:拿不到首选就退到另一个可用格式,真实格式随返回值带出去。给
+    ``RiggedModel`` 那种能如实标注 fmt 的调用方用 —— 那里硬要求只会让已经扣过费的
+    产物取不回来,而两种格式下游都吃。
     """
-    typed = [f for f in files if isinstance(f, Mapping) and str(f.get("Type", "")).upper() == want]
-    if typed:
-        return typed[0]
-    got = [str(f.get("Type", "?")) if isinstance(f, Mapping) else "?" for f in files]
+    def _fmt(f) -> str:
+        return str(f.get("Type", "")).upper() if isinstance(f, Mapping) else ""
+
+    order = (want,) if strict else (want, *(f for f in MODEL_FORMATS if f != want))
+    for fmt in order:
+        hit = [f for f in files if _fmt(f) == fmt]
+        if hit:
+            return hit[0], fmt
+    got = [_fmt(f) or "?" for f in files]
     raise ArtifactFormatError(
-        f"接口没有返回 {want} 产物,这次返回的是 {got}。"
-        f"(可选 {MODEL_FORMATS};别拿第一个产物当 {want} 用 —— 这个坑踩过一次,"
-        "症状会伪装成'出帧管线坏了'。)")
+        f"接口没有返回{'' if strict else '任何可用'}{want if strict else '格式'}产物,"
+        f"这次返回的是 {got}(可选 {MODEL_FORMATS})。"
+        + (f" JobId={job_id} —— 费用已产生,用它重取,别重新提交。" if job_id else ""))
 
 
 def _verify_magic(data: bytes, want: str) -> None:
@@ -295,7 +306,7 @@ class TencentModel3DProvider:
             params["ResultFormat"] = want
         job = self._submit(params)
         files = self._wait(job)
-        picked = _pick_artifact(files, want)
+        picked, _ = _pick_artifact(files, want)
         data = _download(str(picked["Url"]))
         _verify_magic(data, want)
         return data
@@ -406,11 +417,22 @@ class TencentAutoRigProvider:
 
         url = self._upload(model, src_fmt)
         job = self._submit(url, src_fmt, preset)
+        logger.info("绑骨已提交并计费 JobId=%s —— 后续任何失败都用它重取,别重新提交", job)
         files = self._wait(job)
-        picked = _pick_artifact(files, want)
+        picked, got = _pick_artifact(files, want, strict=False, job_id=job)
         data = _download(str(picked["Url"]))
-        _verify_magic(data, want)
-        return RiggedModel(data=data, fmt=want, motion=preset)
+        _verify_magic(data, got)
+        return RiggedModel(data=data, fmt=got, motion=preset)
+
+    def fetch(self, job_id: str, *, want: str = "GLB") -> RiggedModel:
+        """取一个**已完成**任务的产物。零成本,不重新提交。
+
+        存在的理由:提交之后的任何失败(格式、下载、进程被杀)都不该让已经扣过的费作废。
+        """
+        picked, got = _pick_artifact(self._wait(job_id), want, strict=False, job_id=job_id)
+        data = _download(str(picked["Url"]))
+        _verify_magic(data, got)
+        return RiggedModel(data=data, fmt=got, motion=None)
 
     def _upload(self, model: bytes, fmt: str) -> str:
         ct = "model/gltf-binary" if fmt == "GLB" else "application/x-fbx"

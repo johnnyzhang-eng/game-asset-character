@@ -173,6 +173,12 @@ function unionBox(nPerClip = 24) {
   const bones = [];
   model.traverse(o => { if (o.isBone) bones.push(o); });
   const v = new THREE.Vector3();
+  // 无动画时直接量绑定姿态。少了这一支，下面的循环一次都不执行，box 保持空 ——
+  // 空 Box3 的 min/max 是 ±Infinity，cy 算出 NaN，相机位置变 NaN，渲出全透明帧而不报错。
+  if (!Object.keys(clips).length) {
+    box.expandByObject(model);
+    return box;
+  }
   for (const name of Object.keys(clips)) {
     useClip(name);
     for (let i = 0; i < nPerClip; i++) {
@@ -185,6 +191,9 @@ function unionBox(nPerClip = 24) {
   return box;
 }
 const UB = unionBox();
+if (!isFinite(UB.min.y) || !isFinite(UB.max.y)) {
+  throw new Error('构图包围盒是空的 —— 相机会被算成 NaN 并渲出全透明帧');
+}
 const pad = 0.08;
 const spanY = (UB.max.y - UB.min.y) + pad * 2;
 // 横向取 max(X, Z):多朝向是转相机不是转模型,按单一水平轴定构图的话,转到 90° 时
