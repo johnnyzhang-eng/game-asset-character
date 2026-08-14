@@ -35,6 +35,10 @@ export { getOutfitPlayback } from './character/outfit-playback'
 /* 动作模板 —— 能跨角色复用的配方 */
 export type { ActionTemplate, ActionTemplateApis } from './action-template'
 
+/* 动作预设 —— 菜单里那几个动作的文案；真相源在后端，前端不留副本 */
+export { actionPresetApis, ActionPresetContractError } from './action-preset/api'
+export type { ActionPreset, ActionPresetApis } from './action-preset'
+
 /* 生成 —— 业务数据，不是「调用生成能力」 */
 export {
   createAuthenticatedGenerationApis,
