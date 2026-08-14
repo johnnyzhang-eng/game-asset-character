@@ -296,5 +296,5 @@ class SpriteRenderProvider(Protocol):
         directions: int = 4,
         frames: int = 12,
         size: tuple[int, int] = RENDER_SIZE,
-        material: str = "cel",
+        material: str = "lit",
     ) -> SpriteSheet: ...
