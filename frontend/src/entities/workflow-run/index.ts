@@ -76,6 +76,11 @@ export interface WorkflowActionInput {
   type: ActionType
   prompt: string | null
   fps: number
+  /**
+   * 用户对该动作是否循环播放的选择；只对 `type: 'custom'` 有意义——
+   * 预设类型的循环性由后端写死的表决定，前端征询了也会被忽略。
+   */
+  loop?: boolean
 }
 
 /** Action 的首帧卡片；每个 Action 都必须有一份独立输入和确认结果。 */

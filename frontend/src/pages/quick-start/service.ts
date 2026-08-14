@@ -48,8 +48,13 @@ export interface QuickStartSession {
     file: File,
     actionDescription: string,
     signal?: AbortSignal,
+    loop?: boolean,
   ): Promise<WorkflowRun>
-  confirmCandidate(selectedImageUrl: string, actionDescription?: string): Promise<WorkflowRun>
+  confirmCandidate(
+    selectedImageUrl: string,
+    actionDescription?: string,
+    loop?: boolean,
+  ): Promise<WorkflowRun>
   /** 读取当前 Action 首帧生成任务的候选帧。 */
   getFirstFrameCandidates(): Promise<readonly QuickStartFrame[]>
   /** 确认首帧后，Quick Start 自动选择已接入的生成路线并提交完整动画。 */
@@ -70,10 +75,12 @@ export interface QuickStartEntryService {
     file: File,
     actionDescription: string,
     signal?: AbortSignal,
+    loop?: boolean,
   ): Promise<QuickStartSession>
   startAction(
     target: { characterId: string; outfitId: string },
     actionDescription: string,
+    loop?: boolean,
   ): Promise<QuickStartSession>
   open(runId: WorkflowRun['id']): Promise<QuickStartSession>
 }
@@ -98,6 +105,14 @@ function inferGeneratableActionType(description: string): GeneratableActionType 
   if (/^(走|步行|跑|跑步|冲刺|walk|run|sprint)$/u.test(normalized)) return 'walk'
   if (/^(攻击|attack)$/u.test(normalized)) return 'attack'
   return 'custom'
+}
+
+/**
+ * 页面用它决定是否展示循环播放勾选：非 custom 类型的循环性由后端写死的表决定，
+ * 征询用户也会被忽略，所以只在推断结果为 custom 时才值得问。
+ */
+export function isCustomActionDescription(description: string): boolean {
+  return inferGeneratableActionType(description) === 'custom'
 }
 
 /**
@@ -230,11 +245,19 @@ export function createQuickStartService({
     outfitId: string,
     actionDescription: string,
     spriteSize: Project['spriteSize'],
+    loop?: boolean,
   ) {
     const name = actionDescription.trim() || '待机'
     const type = inferGeneratableActionType(actionDescription)
     await controller.addAction({
-      input: { outfitId, name, type, prompt: actionDescription.trim() || null, fps: 12 },
+      input: {
+        outfitId,
+        name,
+        type,
+        prompt: actionDescription.trim() || null,
+        fps: 12,
+        ...(type === 'custom' ? { loop: Boolean(loop) } : {}),
+      },
     })
     const run = controller.getWorkflow()
     const firstFrame = latestActionFirstFrame(run)
@@ -368,6 +391,7 @@ export function createQuickStartService({
         await controller.generateCompleteAnimation(fullFrame.id, {
           characterId,
           referenceMedia: [],
+          loop: firstFrame.input.loop,
         })
       })()
         .catch(onAsyncError)
@@ -416,7 +440,7 @@ export function createQuickStartService({
         stopAutomaticAdvance = null
         controller.dispose()
       },
-      async continueWithUploadedTemplate(file, actionDescription, signal) {
+      async continueWithUploadedTemplate(file, actionDescription, signal, loop) {
         if (!mediaApis) throw new Error('媒体上传服务尚未配置，不能使用角色母版')
         const run = controller.getWorkflow()
         const template = templateNode(run)
@@ -428,11 +452,11 @@ export function createQuickStartService({
         const target = await persistCharacterTemplate(controller, templateReference)
         const spriteSize =
           knownSpriteSize ?? (await resolveProjectSpriteSize(controller.getWorkflow().projectId))
-        await prepareAction(controller, target.outfitId, actionDescription, spriteSize)
+        await prepareAction(controller, target.outfitId, actionDescription, spriteSize, loop)
         ensureAutomaticAdvance()
         return controller.getWorkflow()
       },
-      confirmCandidate(selectedImageUrl, actionDescription) {
+      confirmCandidate(selectedImageUrl, actionDescription, loop) {
         if (candidateCommand) return candidateCommand
         const command = (async () => {
           const template = templateNode(controller.getWorkflow())
@@ -440,7 +464,7 @@ export function createQuickStartService({
           const target = await persistCharacterTemplate(controller, selectedImageUrl)
           const spriteSize =
             knownSpriteSize ?? (await resolveProjectSpriteSize(controller.getWorkflow().projectId))
-          await prepareAction(controller, target.outfitId, actionDescription ?? '', spriteSize)
+          await prepareAction(controller, target.outfitId, actionDescription ?? '', spriteSize, loop)
           ensureAutomaticAdvance()
           return controller.getWorkflow()
         })().finally(() => {
@@ -583,6 +607,7 @@ export function createQuickStartService({
   async function appendActionForCharacter(
     target: { characterId: string; outfitId: string },
     actionDescription: string,
+    loop?: boolean,
   ) {
     if (!characterApis) throw new Error('角色服务尚未配置，不能增加动作')
     const character = await characterApis.get(target.characterId)
@@ -608,7 +633,7 @@ export function createQuickStartService({
           ),
         )
     const spriteSize = await resolveProjectSpriteSize(character.projectId)
-    await prepareAction(controller, outfit.id, actionDescription, spriteSize)
+    await prepareAction(controller, outfit.id, actionDescription, spriteSize, loop)
     return createSession(controller, spriteSize)
   }
 
@@ -628,7 +653,7 @@ export function createQuickStartService({
       return createSession(controller, project.spriteSize)
     },
 
-    async startWithUploadedTemplate(file, actionDescription, signal) {
+    async startWithUploadedTemplate(file, actionDescription, signal, loop) {
       if (!mediaApis) throw new Error('媒体上传服务尚未配置，不能使用角色母版')
       const prompt = actionDescription.trim() || file.name.trim()
       if (!prompt) throw new Error('请提供动作描述或有效的图片文件')
@@ -642,7 +667,7 @@ export function createQuickStartService({
       })
       await controller.acceptUploadedCharacterTemplate('character-setup', templateReference)
       const target = await persistCharacterTemplate(controller, templateReference)
-      await prepareAction(controller, target.outfitId, actionDescription, project.spriteSize)
+      await prepareAction(controller, target.outfitId, actionDescription, project.spriteSize, loop)
       return createSession(controller, project.spriteSize)
     },
 

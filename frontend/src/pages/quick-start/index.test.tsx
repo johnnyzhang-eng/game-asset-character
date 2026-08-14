@@ -243,6 +243,7 @@ describe('QuickStartPage', () => {
         file,
         '挥手',
         expect.any(AbortSignal),
+        false,
       ),
     )
   })
@@ -291,6 +292,7 @@ describe('QuickStartPage', () => {
       expect(service.startAction).toHaveBeenCalledWith(
         { characterId: 'character-1', outfitId: 'outfit-1' },
         '挥手',
+        false,
       ),
     )
 
@@ -302,6 +304,28 @@ describe('QuickStartPage', () => {
     fireEvent.change(screen.getByLabelText('动作描述'), { target: { value: '挥手' } })
     fireEvent.click(screen.getByRole('button', { name: '开始生成新动作' }))
     expect((await screen.findByRole('alert')).textContent).toContain('动作创建失败')
+  })
+
+  it('only shows the loop checkbox for a custom action description, and sends the checked value', async () => {
+    const service = serviceFor(null)
+    renderAt('/quick-start?characterId=character-1&outfitId=outfit-1', service)
+
+    fireEvent.change(screen.getByLabelText('动作描述'), { target: { value: '攻击' } })
+    expect(screen.queryByText(/循环播放/u)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('动作描述'), { target: { value: '来回走动' } })
+    const loopCheckbox = await screen.findByRole('checkbox')
+    expect((loopCheckbox as HTMLInputElement).checked).toBe(false)
+    fireEvent.click(loopCheckbox)
+    fireEvent.click(screen.getByRole('button', { name: '开始生成新动作' }))
+
+    await waitFor(() =>
+      expect(service.startAction).toHaveBeenCalledWith(
+        { characterId: 'character-1', outfitId: 'outfit-1' },
+        '来回走动',
+        true,
+      ),
+    )
   })
 
   it('recovers missing runs and returns to the creation entry', async () => {
@@ -341,6 +365,7 @@ describe('QuickStartPage', () => {
       expect(service.confirmCandidate).toHaveBeenCalledWith(
         'https://example.test/candidate.png',
         '挥手',
+        false,
       ),
     )
     expect((await screen.findByRole('alert')).textContent).toContain('候选确认失败')

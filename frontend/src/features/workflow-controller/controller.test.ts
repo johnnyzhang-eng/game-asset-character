@@ -1492,6 +1492,56 @@ describe('WorkflowController', () => {
     ])
   })
 
+  it('生成完整动画时把 GenerateActionOptions.loop 原样透传给生成输入', async () => {
+    const run = createRun([
+      ...completedCharacterNodes(),
+      firstFrameNode({
+        status: 'passed',
+        phase: 'completed',
+        selectedFirstFrameUrl: 'https://img/first.png',
+        input: actionInput({ type: 'custom', name: '来回走动', prompt: '来回走动' }),
+      }),
+      generationMethodNode({ status: 'passed', phase: 'completed', method: 'video-cropping' }),
+      fullFrameNode({ status: 'active', phase: 'ready' }),
+      reviewNode(),
+    ])
+    const { controller, generation } = createController(run)
+
+    await controller.generateCompleteAnimation('action-walk:action-full-frame', {
+      characterId: 'character-backend-1',
+      referenceMedia: [],
+      loop: true,
+    })
+
+    expect(generation.apis.create).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'complete_animation', loop: true }),
+    )
+  })
+
+  it('不传 loop 时完整动画生成输入里的 loop 是 undefined，不擅自兜底成 true', async () => {
+    const run = createRun([
+      ...completedCharacterNodes(),
+      firstFrameNode({
+        status: 'passed',
+        phase: 'completed',
+        selectedFirstFrameUrl: 'https://img/first.png',
+      }),
+      generationMethodNode({ status: 'passed', phase: 'completed', method: 'video-cropping' }),
+      fullFrameNode({ status: 'active', phase: 'ready' }),
+      reviewNode(),
+    ])
+    const { controller, generation } = createController(run)
+
+    await controller.generateCompleteAnimation('action-walk:action-full-frame', {
+      characterId: 'character-backend-1',
+      referenceMedia: [],
+    })
+
+    const createdInput = (generation.apis.create as ReturnType<typeof vi.fn>).mock
+      .calls[0]?.[0] as Record<string, unknown>
+    expect(createdInput.loop).toBeUndefined()
+  })
+
   it('生成动作首帧时使用清理后的自定义提示词', async () => {
     const run = createRun([...completedCharacterNodes(), ...actionNodes()])
     const firstFrame = run.nodes.find((node) => node.type === 'action-first-frame')
