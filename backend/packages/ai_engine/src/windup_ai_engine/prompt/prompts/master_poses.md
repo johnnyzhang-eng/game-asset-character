@@ -28,7 +28,7 @@ that hand and anything held in it staying BELOW the shoulders; leave generous em
 
 ```text
 low coiled stance ready to drive straight forward: the weight sunk onto the back leg with both knees bent,
-the striking side pulled in tight against the body at WAIST height and held there ready to fire,
+the striking side pulled in tight against the body at WAIST height and held there ready to snap forward,
 the torso squared low over the front foot, that side and anything held in it staying BELOW the shoulders;
 leave generous empty space in front
 ```
