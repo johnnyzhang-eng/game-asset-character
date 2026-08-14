@@ -417,6 +417,47 @@ describe('WorkflowEditorPage real runtime boundary', () => {
     )
   })
 
+  it('该造型没有 3D 资产时禁用三渲二选项并给出原因', async () => {
+    const workflow = selectingGenerationMethodWorkflow()
+    const session = createSession(workflow, { character: characterFixture() })
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    const render3dButton = await screen.findByRole('button', { name: /三渲二/ })
+    expect(render3dButton.hasAttribute('disabled')).toBe(true)
+    expect(screen.getByText(/暂无绑骨 3D 模型/)).toBeTruthy()
+
+    fireEvent.click(render3dButton)
+    expect(
+      workflow.nodes.find((node) => node.type === 'action-generation-method'),
+    ).toMatchObject({ method: null })
+  })
+
+  it('该造型已有 3D 资产时可以选择三渲二并据此提交完整动画', async () => {
+    const workflow = selectingGenerationMethodWorkflow()
+    const character = characterFixture()
+    character.outfits[0]!.model3dUrl = 'https://assets.windup.test/day.glb'
+    const session = createSession(workflow, { character })
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    const render3dButton = await screen.findByRole('button', { name: '三渲二' })
+    expect(render3dButton.hasAttribute('disabled')).toBe(false)
+    fireEvent.click(render3dButton)
+
+    await waitFor(() =>
+      expect(session.controller.getWorkflow().nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'action-generation-method',
+            method: '3d-to-2d',
+            status: 'passed',
+          }),
+        ]),
+      ),
+    )
+  })
+
   it('发布成功但审核保存失败时仍显式刷新 Character', async () => {
     const publishReviewedAction = vi.fn(async () => characterFixture())
     const session = createSession(reviewingActionWorkflow(), {
@@ -916,6 +957,19 @@ function completedTemplateWorkflow(id: string): WorkflowRun {
   }
 }
 
+/** 首帧已确认、正等待用户选择生产方式的工作流——三渲二可选性的判定发生在这一步。 */
+function selectingGenerationMethodWorkflow(): WorkflowRun {
+  const workflow = reviewingActionWorkflow()
+  for (const node of workflow.nodes) {
+    if (node.type === 'action-generation-method') {
+      node.status = 'active'
+      node.phase = 'selecting'
+      node.method = null
+    }
+  }
+  return workflow
+}
+
 function reviewingActionWorkflow(...actionIds: string[]): WorkflowRun {
   const workflow = completedTemplateWorkflow('42')
   workflow.version = 7
@@ -1164,6 +1218,7 @@ function characterFixture(): Character {
         name: '常态装',
         description: null,
         previewUrl: null,
+        model3dUrl: null,
         actions: [],
       },
       {
@@ -1172,6 +1227,7 @@ function characterFixture(): Character {
         name: '夜行装',
         description: null,
         previewUrl: null,
+        model3dUrl: null,
         actions: [],
       },
     ],

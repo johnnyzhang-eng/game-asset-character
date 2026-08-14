@@ -130,6 +130,7 @@ export async function createRealWorkflowEditorSession(
               name: '常态造型',
               description: null,
               previewUrl: imageUrl,
+              model3dUrl: null,
               actions: [],
             },
           ],
