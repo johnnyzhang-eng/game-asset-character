@@ -520,6 +520,7 @@ function characterWithOutfitFixture(): Character {
         name: '常态造型',
         description: null,
         previewUrl: null,
+        model3dUrl: null,
         actions: [],
       },
     ],

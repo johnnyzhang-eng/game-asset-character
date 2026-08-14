@@ -112,6 +112,15 @@ const CARD_SUMMARY =
 
 const CARD_TEXT = 'm-0 text-[11px] leading-[1.6] text-[var(--color-app-muted)]'
 
+/**
+ * 三渲二判据只有一条:该造型有没有已确认的绑骨 3D 模型(`Outfit.model3dUrl`)。
+ * 没有就不提供这个选项——猜一个"反正总能兜底成 i2v"等于让用户在不知情下换了路线。
+ * 建模型本身是按次计费、每造型一次性(图生 3D + 绑骨),且生成后要人工确认模型才能继续绑骨。
+ */
+const RENDER3D_UNAVAILABLE_HINT =
+  '该造型暂无绑骨 3D 模型，暂不能使用三渲二。需先为该造型生成 3D 模型并人工确认（图生 3D + ' +
+  '自动绑骨，按次计费，每造型一次性），确认通过后才能继续；不合格只能重新生成，不能修改。'
+
 /** 加号菜单里的条目：撑满菜单宽度的两行文字，跟卡片主按钮完全不同。 */
 const MENU_ITEM =
   'flex min-h-0 cursor-pointer flex-col gap-0.5 border-0 px-3 py-[9px] text-left ' +
@@ -1083,8 +1092,17 @@ function MethodContent({
   const branchKey = branchKeyOf(node, input)
   const branchBusy = input.busyBranches.has(branchKey)
   if (node.status === 'failed') return <StatusText node={node} input={input} />
-  if (node.phase === 'completed') return <p className={CARD_SUMMARY}>视频裁剪</p>
+  if (node.phase === 'completed') {
+    return <p className={CARD_SUMMARY}>{node.method === '3d-to-2d' ? '三渲二' : '视频裁剪'}</p>
+  }
   if (node.status !== 'active') return <StatusText node={node} input={input} />
+
+  const firstFrameNode = findDependency(input.run, node, 'action-first-frame')
+  const outfit = firstFrameNode
+    ? input.character?.outfits.find((candidate) => candidate.id === firstFrameNode.input.outfitId)
+    : null
+  const render3dReady = Boolean(outfit?.model3dUrl)
+
   return (
     <div className={CARD_STACK}>
       <button
@@ -1099,9 +1117,20 @@ function MethodContent({
       >
         视频裁剪
       </button>
-      <button type="button" className={CARD_BUTTON} disabled title="后端接口尚未提供">
-        3D 转 2D · 尚未开放
+      <button
+        type="button"
+        className={CARD_BUTTON}
+        disabled={branchBusy || !render3dReady}
+        title={render3dReady ? undefined : RENDER3D_UNAVAILABLE_HINT}
+        onClick={() =>
+          input.runCommand(branchKey, () =>
+            input.controller.selectActionGenerationMethod(node.id, '3d-to-2d'),
+          )
+        }
+      >
+        三渲二{render3dReady ? '' : ' · 需先建 3D 模型'}
       </button>
+      {render3dReady ? null : <p className={CARD_TEXT}>{RENDER3D_UNAVAILABLE_HINT}</p>}
     </div>
   )
 }
