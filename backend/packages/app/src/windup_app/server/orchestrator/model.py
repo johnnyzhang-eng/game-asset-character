@@ -126,6 +126,11 @@ class CharacterActionOutput:
     type: str = "character_action"
     action_type: str = ""
     frames: list[CharacterActionFrame] = field(default_factory=list)
+    # 判官读数(``quality_gate.GateDecision.as_payload``)。``None`` = **没判**,不是
+    # "判了没问题" —— 闸口默认不启用,把缺省读成"干净"会让 shadow 期的统计凭空多出一批
+    # 从未判读过的样本。形状留 dict 而不是拆成字段:shadow 期正是要观察该记哪些东西,
+    # 每加一个读数就改一次 ORM 反序列化的话,数据还没攒够就先僵住了。
+    quality: dict | None = None
 
 
 # -- 任务记录 ------------------------------------------------------------
