@@ -227,5 +227,6 @@ def _deserialize_result(
             type=raw.get("type", "character_action"),
             action_type=raw.get("action_type", ""),
             frames=frames,
+            quality=raw.get("quality"),
         )
     return None
