@@ -46,6 +46,8 @@ export interface GenerateActionOptions {
   characterId: string
   /** 由上传/媒体边界提供，Controller 不把展示 URL 冒充 MediaReference。 */
   referenceMedia: readonly MediaReference[]
+  /** 只对 custom 动作有意义；透传给 CompleteAnimationGenerationInput.loop。 */
+  loop?: boolean
 }
 
 export interface GenerateFirstFrameOptions {
@@ -588,6 +590,7 @@ export function createWorkflowController({
         firstFrameUrl: firstFrameNode.selectedFirstFrameUrl,
         prompt: firstFrameNode.input.prompt,
         referenceMedia: options.referenceMedia,
+        loop: options.loop,
       }
       return input
     })

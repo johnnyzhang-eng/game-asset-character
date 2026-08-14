@@ -353,6 +353,90 @@ describe('WorkflowEditorPage real runtime boundary', () => {
     )
   })
 
+  it('自定义动作表单勾选循环播放后，落库的首帧输入带 loop: true', async () => {
+    const session = createSession(completedTemplateWorkflow('42'), {
+      character: characterFixture(),
+    })
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加动作分支' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成动作 ›' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择造型 夜行装' }))
+    fireEvent.click(screen.getByRole('button', { name: /^自定义动作/u }))
+
+    fireEvent.change(screen.getByLabelText('自定义动作描述'), {
+      target: { value: '来回走动' },
+    })
+    fireEvent.click(screen.getByRole('checkbox'))
+    fireEvent.click(screen.getByRole('button', { name: '创建自定义动作' }))
+
+    await waitFor(() =>
+      expect(session.controller.getWorkflow().nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'action-first-frame',
+            input: expect.objectContaining({ outfitId: 'night', type: 'custom', loop: true }),
+          }),
+        ]),
+      ),
+    )
+  })
+
+  it('不勾选循环播放时，自定义动作的首帧输入带 loop: false', async () => {
+    const session = createSession(completedTemplateWorkflow('42'), {
+      character: characterFixture(),
+    })
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加动作分支' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成动作 ›' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择造型 夜行装' }))
+    fireEvent.click(screen.getByRole('button', { name: /^自定义动作/u }))
+
+    fireEvent.change(screen.getByLabelText('自定义动作描述'), {
+      target: { value: '蹲下捡东西' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '创建自定义动作' }))
+
+    await waitFor(() =>
+      expect(session.controller.getWorkflow().nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'action-first-frame',
+            input: expect.objectContaining({ outfitId: 'night', type: 'custom', loop: false }),
+          }),
+        ]),
+      ),
+    )
+  })
+
+  it('生成完整动画时把首帧记录的 loop 选择透传给 Controller', async () => {
+    const workflow = reviewingActionWorkflow()
+    const firstFrame = workflow.nodes.find((node) => node.type === 'action-first-frame')
+    if (!firstFrame || firstFrame.type !== 'action-first-frame') throw new Error('missing frame')
+    firstFrame.input = { ...firstFrame.input, type: 'custom', loop: true }
+    const fullFrame = workflow.nodes.find((node) => node.type === 'action-full-frame')
+    if (!fullFrame || fullFrame.type !== 'action-full-frame') throw new Error('missing full frame')
+    fullFrame.status = 'active'
+    fullFrame.phase = 'ready'
+    fullFrame.generations = []
+    const session = createSession(workflow, { character: characterFixture() })
+    const generateSpy = vi.spyOn(session.controller, 'generateCompleteAnimation')
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    fireEvent.click(await screen.findByRole('button', { name: '生成完整动画' }))
+
+    await waitFor(() =>
+      expect(generateSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ loop: true }),
+      ),
+    )
+  })
+
   it('展示三张动作首帧候选并确认用户选择的一张', async () => {
     const workflow = reviewingActionWorkflow()
     const firstFrame = workflow.nodes.find((node) => node.type === 'action-first-frame')

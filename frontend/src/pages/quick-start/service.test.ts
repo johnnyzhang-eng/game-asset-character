@@ -897,6 +897,52 @@ describe('createQuickStartService', () => {
     })
   })
 
+  it('records the loop choice only for a custom action, never for a preset one', async () => {
+    const character = characterFixture({
+      id: 'character-existing',
+      workflowRunId: 'old-run',
+      name: '老角色',
+      referenceImageUrl: 'existing.png',
+      outfits: [
+        {
+          id: 'outfit-existing',
+          characterId: 'character-existing',
+          name: '默认造型',
+          description: null,
+          previewUrl: 'existing.png',
+          actions: [],
+        },
+      ],
+    })
+    const generationApis = pendingGenerationApis()
+    const service = createQuickStartService({
+      workflowRunApis: createWorkflowRunApis(),
+      generationApis,
+      characterApis: {
+        get: vi.fn(async () => character),
+        listByProject: vi.fn(async () => ({ items: [character], total: 1, page: 1, pageSize: 20 })),
+        create: vi.fn(),
+        update: vi.fn(),
+        remove: vi.fn(),
+      } as unknown as CharacterApis,
+      projectApis: projectReader(),
+      prepareProject: vi.fn(),
+    })
+
+    const target = { characterId: character.id, outfitId: 'outfit-existing' }
+    const customSession = await service.startAction(target, '来回走动', true)
+    expect(
+      customSession.getWorkflow().nodes.find((node) => node.type === 'action-first-frame'),
+    ).toMatchObject({ input: { type: 'custom', loop: true } })
+
+    const presetSession = await service.startAction(target, '跑步', true)
+    const presetFirstFrame = presetSession
+      .getWorkflow()
+      .nodes.findLast((node) => node.type === 'action-first-frame')
+    expect(presetFirstFrame).toMatchObject({ input: { type: 'walk' } })
+    expect(presetFirstFrame && 'loop' in presetFirstFrame.input).toBe(false)
+  })
+
   it('rolls back an orphan character when binding its uploaded template fails', async () => {
     const character = characterFixture({
       id: 'orphan-character',
@@ -1074,6 +1120,60 @@ describe('createQuickStartService', () => {
           outfitId: 'outfit-1',
           firstFrameUrl: firstFrameUrls[1],
         }),
+      )
+    })
+  })
+
+  it('自动推进阶段把首帧节点记录的 loop 选择透传给完整动画生成请求', async () => {
+    const firstFrameUrls = ['https://example.test/first-frame-1.png']
+    const generationApis: GenerationApis = {
+      create: vi.fn(async () => ({
+        id: 'task-animation',
+        projectId: 'project-1',
+        type: 'complete_animation' as const,
+        status: 'pending' as const,
+        result: null,
+        error: null,
+      })),
+      get: vi.fn(async (_projectId, id) => {
+        if (id === 'task-animation') {
+          return {
+            id,
+            projectId: 'project-1',
+            type: 'complete_animation' as const,
+            status: 'pending' as const,
+            result: null,
+            error: null,
+          }
+        }
+        return {
+          id,
+          projectId: 'project-1',
+          type: 'first_frame' as const,
+          status: 'completed' as const,
+          result: { type: 'first_frame' as const, images: firstFrameUrls.map((url) => ({ url })) },
+          error: null,
+        }
+      }),
+      subscribe: vi.fn(() => () => undefined),
+    }
+    const run = actionRun(true)
+    const firstFrame = run.nodes.find((node) => node.type === 'action-first-frame')
+    if (!firstFrame || firstFrame.type !== 'action-first-frame') throw new Error('missing frame')
+    firstFrame.input.loop = true
+    const service = createQuickStartService({
+      workflowRunApis: createWorkflowRunApis([run]),
+      generationApis,
+      prepareProject: async () => ({ id: 'project-1', spriteSize: { width: 256, height: 256 } }),
+      projectApis: projectReader(),
+    })
+    const session = await service.open('run-1')
+
+    await session.confirmFirstFrame(firstFrameUrls[0]!)
+
+    await vi.waitFor(() => {
+      expect(generationApis.create).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'complete_animation', loop: true }),
       )
     })
   })

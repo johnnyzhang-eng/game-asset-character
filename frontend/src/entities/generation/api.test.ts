@@ -225,6 +225,79 @@ describe('createGenerationApis', () => {
     })
   })
 
+  it('自定义动作按用户选择发送 loop：勾选传 true，不勾传 false', async () => {
+    const request = vi.fn(async (_url: string, _init?: RequestInit) =>
+      success(
+        taskData({
+          task_type: 'character_action',
+          input_payload: { num_frames: 32, action_type: 'custom' },
+          result: { type: 'character_action', action_type: 'custom', frames: actionFrames(32) },
+        }),
+      ),
+    )
+    const apis = createGenerationApis({
+      baseUrl: '/api',
+      transport: { request, stream: vi.fn(() => vi.fn()) },
+    })
+
+    await apis.create({
+      type: 'complete_animation',
+      projectId: '42',
+      characterId: '5',
+      outfitId: 'default',
+      actionType: 'custom',
+      firstFrameUrl: 'https://cdn.test/frame-1.png',
+      prompt: '来回走动',
+      referenceMedia: [],
+      loop: true,
+    })
+    expect(JSON.parse(String(request.mock.calls[0]?.[1]?.body))).toMatchObject({ loop: true })
+
+    await apis.create({
+      type: 'complete_animation',
+      projectId: '42',
+      characterId: '5',
+      outfitId: 'default',
+      actionType: 'custom',
+      firstFrameUrl: 'https://cdn.test/frame-1.png',
+      prompt: '挥一次拳',
+      referenceMedia: [],
+      loop: false,
+    })
+    expect(JSON.parse(String(request.mock.calls[1]?.[1]?.body))).toMatchObject({ loop: false })
+  })
+
+  it('非 custom 动作不发送 loop 字段，即便调用方误传了它', async () => {
+    const request = vi.fn(async (_url: string, _init?: RequestInit) =>
+      success(
+        taskData({
+          task_type: 'character_action',
+          input_payload: { num_frames: 32, action_type: 'walk' },
+          result: { type: 'character_action', action_type: 'walk', frames: actionFrames(32) },
+        }),
+      ),
+    )
+    const apis = createGenerationApis({
+      baseUrl: '/api',
+      transport: { request, stream: vi.fn(() => vi.fn()) },
+    })
+
+    await apis.create({
+      type: 'complete_animation',
+      projectId: '42',
+      characterId: '5',
+      outfitId: 'default',
+      actionType: 'walk',
+      firstFrameUrl: 'https://cdn.test/frame-1.png',
+      prompt: 'move forward',
+      referenceMedia: [],
+      loop: true,
+    })
+
+    const body = JSON.parse(String(request.mock.calls[0]?.[1]?.body)) as Record<string, unknown>
+    expect('loop' in body).toBe(false)
+  })
+
   it('拒绝未知任务状态而不是默认为 pending', async () => {
     const request = vi.fn(async () => success(taskData({ status: 'queued' })))
     const apis = createGenerationApis({

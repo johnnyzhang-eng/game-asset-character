@@ -18,6 +18,7 @@ import {
 } from '@/entities'
 import { ExportButton, type ExportPackageModel } from '@/features/export-package'
 import {
+  isCustomActionDescription,
   quickStartService,
   type QuickStartEntryService,
   type QuickStartFrame,
@@ -104,6 +105,7 @@ function QuickStartActionInput({
 }) {
   const navigate = useNavigate()
   const [description, setDescription] = useState('')
+  const [loop, setLoop] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -114,7 +116,7 @@ function QuickStartActionInput({
     setSubmitting(true)
     setError(null)
     try {
-      const session = await service.startAction(target, prompt)
+      const session = await service.startAction(target, prompt, loop)
       onSessionCreated(session)
       navigate(`/quick-start/${encodeURIComponent(session.runId)}`)
     } catch (cause) {
@@ -148,6 +150,19 @@ function QuickStartActionInput({
               className="mt-2 min-h-32 w-full resize-y rounded-lg border border-app-line-strong bg-app-surface-raised p-4 text-base outline-none focus:border-app-accent"
             />
           </label>
+          {isCustomActionDescription(description) ? (
+            <label className="flex items-start gap-2 text-xs text-app-muted">
+              <input
+                type="checkbox"
+                checked={loop}
+                onChange={(event) => setLoop(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>
+                循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾
+              </span>
+            </label>
+          ) : null}
           {error ? (
             <p role="alert" className="text-sm text-app-danger">
               {error}
@@ -176,6 +191,7 @@ function QuickStartInput({
   const navigate = useNavigate()
   const [prompt, setPrompt] = useState('')
   const [templateFile, setTemplateFile] = useState<File | null>(null)
+  const [actionLoop, setActionLoop] = useState(false)
   const [submitting, setSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -215,6 +231,7 @@ function QuickStartInput({
             templateFile,
             normalizedPrompt,
             abortController.signal,
+            actionLoop,
           )
         : await service.start(normalizedPrompt)
       onSessionCreated(session)
@@ -338,6 +355,17 @@ function QuickStartInput({
                   </button>
                 </span>
               ) : null}
+              {templateFile && isCustomActionDescription(prompt) ? (
+                <label className="flex items-start gap-2 px-2 text-[10px] text-app-faint">
+                  <input
+                    type="checkbox"
+                    checked={actionLoop}
+                    onChange={(event) => setActionLoop(event.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>循环播放：走路/待机这类可无缝重复的勾选；攻击/跳跃这类做一次的不要勾</span>
+                </label>
+              ) : null}
             </label>
 
             <div className="flex min-w-32 flex-col gap-2">
@@ -406,6 +434,7 @@ function QuickStartRun({
   const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null)
   const [selectedFirstFrame, setSelectedFirstFrame] = useState<string | null>(null)
   const [actionDescription, setActionDescription] = useState('')
+  const [actionLoop, setActionLoop] = useState(false)
   const [candidates, setCandidates] = useState<readonly string[]>([])
   const [firstFrameCandidates, setFirstFrameCandidates] = useState<readonly QuickStartFrame[]>([])
   const [actionFrames, setActionFrames] = useState<readonly QuickStartFrame[]>([])
@@ -581,10 +610,11 @@ function QuickStartRun({
     setError(null)
     try {
       if (!session) return
-      const updated = await session.confirmCandidate(selectedCandidate, actionDescription)
+      const updated = await session.confirmCandidate(selectedCandidate, actionDescription, actionLoop)
       setRun(updated)
       setSelectedCandidate(null)
       setActionDescription('')
+      setActionLoop(false)
     } catch (cause) {
       setError(errorMessage(cause, '确认选择失败'))
     } finally {
@@ -802,6 +832,19 @@ function QuickStartRun({
                       className="rounded-xl border border-app-line bg-app-surface-raised px-4 py-2.5 text-sm text-app-ink outline-none placeholder:text-app-faint focus:border-app-line-strong"
                     />
                   </label>
+                  {isCustomActionDescription(actionDescription) ? (
+                    <label className="flex items-start gap-2 text-xs text-app-muted">
+                      <input
+                        type="checkbox"
+                        checked={actionLoop}
+                        onChange={(event) => setActionLoop(event.target.checked)}
+                        className="mt-0.5"
+                      />
+                      <span>
+                        循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾
+                      </span>
+                    </label>
+                  ) : null}
                   <div className="flex justify-center gap-3">
                     <button
                       type="button"

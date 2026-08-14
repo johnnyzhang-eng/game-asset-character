@@ -52,7 +52,7 @@ type WorkflowCardData = {
 }
 
 type WorkflowCardNode = Node<WorkflowCardData, 'workflow-card'>
-type ActionMenuLevel = 'root' | 'outfits' | 'actions'
+type ActionMenuLevel = 'root' | 'outfits' | 'actions' | 'custom-action'
 
 /**
  * 菜单里的预设动作。label 只用于展示，name 是落进 WorkflowRun 的动作名——
@@ -72,6 +72,7 @@ const ACTION_PRESETS = [
     name: '攻击',
     prompt: '蓄力后向前攻击并回到准备姿态',
   },
+  { type: 'custom', label: '自定义动作', name: '', prompt: '' },
 ] as const
 
 const ACTION_PRESET_HINT = '预设动作 · 逐帧生成'
@@ -848,6 +849,17 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
     )
   }
 
+  if (input.actionMenuLevel === 'custom-action') {
+    return (
+      <CustomActionForm
+        input={input}
+        templateNodeId={templateNodeId}
+        selectedOutfit={selectedOutfit}
+        branchBusy={branchBusy}
+      />
+    )
+  }
+
   return (
     <div className="contents">
       <button
@@ -865,6 +877,10 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
           disabled={!selectedOutfit || branchBusy}
           onClick={() => {
             if (!selectedOutfit) return
+            if (preset.type === 'custom') {
+              input.setActionMenuLevel('custom-action')
+              return
+            }
             input.runCommand(SHARED_BRANCH, () =>
               input.controller.addAction({
                 dependsOnNodeIds: [templateNodeId],
@@ -883,13 +899,86 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
           }}
         >
           <b className={MENU_ITEM_TITLE}>{preset.label}</b>
-          <small className={MENU_ITEM_HINT}>{ACTION_PRESET_HINT}</small>
+          <small className={MENU_ITEM_HINT}>
+            {preset.type === 'custom' ? '自由描述 · 可选循环播放' : ACTION_PRESET_HINT}
+          </small>
         </button>
       ))}
-      <button type="button" className={MENU_ITEM} disabled title="当前页面尚未提供动作描述输入">
-        <b className={MENU_ITEM_TITLE}>自定义动作</b>
-        <small className={MENU_ITEM_HINT}>描述输入尚未开放</small>
+    </div>
+  )
+}
+
+/** 自由文本 + 循环勾选；表单只在展开时挂载，切走一次就丢弃未提交的草稿。 */
+function CustomActionForm({
+  input,
+  templateNodeId,
+  selectedOutfit,
+  branchBusy,
+}: {
+  input: ProjectionInput
+  templateNodeId: string
+  selectedOutfit: Character['outfits'][number] | null
+  branchBusy: boolean
+}) {
+  const [prompt, setPrompt] = useState('')
+  const [loop, setLoop] = useState(false)
+
+  return (
+    <div className="contents">
+      <button
+        type="button"
+        className={`${MENU_ITEM} ${MENU_ITEM_LEAD}`}
+        onClick={() => input.setActionMenuLevel('actions')}
+      >
+        ← 自定义动作
       </button>
+      <div className="grid gap-2 px-3 py-[9px]">
+        <textarea
+          aria-label="自定义动作描述"
+          rows={3}
+          value={prompt}
+          disabled={branchBusy}
+          onChange={(event) => setPrompt(event.target.value)}
+          placeholder="例如：来回走动、蹲下捡起地上的东西"
+          className="w-full resize-y rounded-lg border border-[var(--color-app-line)] bg-app-surface-raised px-2.5 py-2 text-[11px] leading-[1.5] text-[var(--color-app-ink)] focus:border-app-accent focus:outline focus:outline-2 focus:outline-offset-1 focus:outline-app-accent-soft"
+        />
+        <label className="flex items-start gap-2 text-[10px] leading-[1.5] text-app-muted">
+          <input
+            type="checkbox"
+            checked={loop}
+            disabled={branchBusy}
+            onChange={(event) => setLoop(event.target.checked)}
+          />
+          <span>循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾</span>
+        </label>
+        <button
+          type="button"
+          className={CARD_BUTTON}
+          disabled={!selectedOutfit || branchBusy || !prompt.trim()}
+          onClick={() => {
+            if (!selectedOutfit) return
+            const description = prompt.trim()
+            input.runCommand(SHARED_BRANCH, () =>
+              input.controller.addAction({
+                dependsOnNodeIds: [templateNodeId],
+                input: {
+                  outfitId: selectedOutfit.id,
+                  name: description.slice(0, 20),
+                  type: 'custom',
+                  prompt: description,
+                  fps: 12,
+                  loop,
+                },
+              }),
+            )
+            input.setActionMenuOpen(false)
+            input.setActionMenuLevel('root')
+            input.setSelectedOutfitId(null)
+          }}
+        >
+          创建自定义动作
+        </button>
+      </div>
     </div>
   )
 }
@@ -1049,6 +1138,7 @@ function AnimationContent({
             input.controller.generateCompleteAnimation(node.id, {
               characterId: character.id,
               referenceMedia: [],
+              loop: firstFrameNode?.input.loop,
             }),
           )
         }}
