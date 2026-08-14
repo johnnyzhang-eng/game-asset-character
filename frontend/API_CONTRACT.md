@@ -55,6 +55,22 @@ Character
 Outfit、Action、Frame 没有独立端点。`outfit.characterId` 与 `action.outfitId` 仅由嵌套关系推导；修改任一子项时通过 `PATCH Character` 提交完整 `character_data`。
 创建 Character 时必须传入 `workflow_run_id`；编辑器也只读取与当前 WorkflowRun 绑定的角色，不能从同项目角色中按顺序猜测。
 
+### 三渲二资产（母版预检 + 造型级 3D 模型）
+
+| 前端方法 | HTTP | 后端能力 |
+|---|---|---|
+| `Render3DApis.precheckMaster` | `POST /render3d/master-precheck` | 零成本母版预检，返回量到的形态、拒绝码与警告 |
+| `Render3DApis.getOutfitAsset` | `GET /render3d/characters/{id}/outfits/{outfitId}` | 该造型 3D 资产的状态与成本，无副作用 |
+| `Render3DApis.buildOutfitAsset` | `POST .../build` | 触发图生 3D（**按次计费**） |
+| `Render3DApis.approveOutfitAsset` | `POST .../approve` | 人工确认通过 → 继续绑骨（**按次计费**） |
+| `Render3DApis.discardOutfitAsset` | `POST .../discard` | 待审模型不合格 → 丢弃重来 |
+
+状态取值 `absent / building / awaiting_review / rigging / ready / failed`。`awaiting_review` 是一道**人工确认停点**，不会自己变成 `rigging`：混元的模型生成即最终（拓扑、绑点在生成那一步定死），不合格只能重新生成，所以要在花绑骨那笔钱之前让人看一眼；`review_model_url` 就是给人下载来看的那一份。
+
+`cost` 由后端从计费实现取（图生 3D 20 积分 + 绑骨 10 积分，后付费 0.12 元/积分，每造型一次性）。**前端不抄这些常量**——抄的那一份会在供应商调价时分叉，而它正是用户据以决定要不要花这笔钱的数字。
+
+`master-precheck` 只收自家对象存储的 URL：服务端替调用方拉任意地址等于把服务器当跳板。
+
 ## 二、本轮明确不实现
 
 - Workflow Editor 与生成流程：不在 Projects / 资产库模块内创建弹窗或复制生成逻辑。
