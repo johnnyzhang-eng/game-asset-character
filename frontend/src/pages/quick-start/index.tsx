@@ -4,8 +4,10 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type ChangeEvent,
   type FormEvent,
+  type ReactNode,
 } from 'react'
 import { ArrowUp, ImageSquare, X } from '@phosphor-icons/react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
@@ -14,11 +16,9 @@ import {
   type ActionFirstFrameWorkflowNode,
   type CharacterTemplateWorkflowNode,
   type WorkflowRun,
-  type WorkflowNode,
-  type WorkflowNodeType,
 } from '@/entities'
 import { ExportButton, type ExportPackageModel } from '@/features/export-package'
-import { KineticCopyCycle, type KineticCopyMessage } from '@/shared/ui'
+import { KineticCopyCycle, type KineticCopyMessage } from './kinetic-copy-cycle'
 import {
   isCustomActionDescription,
   quickStartService,
@@ -26,6 +26,7 @@ import {
   type QuickStartFrame,
   type QuickStartSession,
 } from './service'
+import './quick-start-motion.css'
 
 export type {
   CreateQuickStartServiceOptions,
@@ -33,15 +34,6 @@ export type {
   QuickStartEntryService,
   QuickStartSession,
 } from './service'
-
-const STEP_LABELS: Record<WorkflowNodeType, string> = {
-  'character-setup': '角色设定',
-  'character-template': '角色图',
-  'action-first-frame': '候选选择',
-  'action-generation-method': '生成路线',
-  'action-full-frame': '动作生成',
-  review: '审核',
-}
 
 const STYLE_PROMPTS = [
   {
@@ -87,6 +79,35 @@ const ROLE_DEFAULT_MESSAGE: readonly KineticCopyMessage[] = [
   { lines: ['用文字塑造你的角色……'], className: 'text-app-ink' },
 ]
 
+const TEMPLATE_GENERATION_MESSAGES: readonly KineticCopyMessage[] = [
+  { lines: ['勾勒角色轮廓'] },
+  { lines: ['给衣服配颜色'] },
+  { lines: ['把发型画清楚'] },
+  { lines: ['添上表情'] },
+  { lines: ['处理一下光影'] },
+  { lines: ['补齐画面细节'] },
+]
+
+const FIRST_FRAME_GENERATION_MESSAGES: readonly KineticCopyMessage[] = [
+  { lines: ['摆好动作姿态'] },
+  { lines: ['调整手脚位置'] },
+  { lines: ['让重心自然一点'] },
+  { lines: ['拉开姿态的区别'] },
+  { lines: ['保持角色样子'] },
+  { lines: ['补上动作细节'] },
+]
+
+const ACTION_GENERATION_MESSAGES: readonly KineticCopyMessage[] = [
+  { lines: ['把动作连起来'] },
+  { lines: ['补上中间的变化'] },
+  { lines: ['理顺每一帧的节奏'] },
+  { lines: ['检查手脚的衔接'] },
+  { lines: ['让起落自然一点'] },
+  { lines: ['调整动作幅度'] },
+]
+
+const ENTRY_HANDOFF_MS = 460
+
 function playtestPath(characterId: string, outfitId: string, actionId?: string): string {
   const path = `/playtest/${encodeURIComponent(characterId)}/${encodeURIComponent(outfitId)}`
   return actionId ? `${path}?${new URLSearchParams({ actionId })}` : path
@@ -110,7 +131,6 @@ export function QuickStartPage({ service }: QuickStartPageProps) {
   const [createdSession, setCreatedSession] = useState<QuickStartSession | null>(null)
   const characterId = searchParams.get('characterId')
   const outfitId = searchParams.get('outfitId')
-
   return runId ? (
     <QuickStartRun
       service={activeService}
@@ -237,16 +257,30 @@ function QuickStartInput({
   const [templateFile, setTemplateFile] = useState<File | null>(null)
   const [actionLoop, setActionLoop] = useState(false)
   const [submitting, setSubmitting] = useState(false)
+  const [entryTransition, setEntryTransition] = useState<'idle' | 'leaving'>('idle')
   const [error, setError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const submitAbortController = useRef<AbortController | null>(null)
+  const handoffTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const unavailableReason = service.unavailableReason
   const hasPrompt = Boolean(prompt.trim())
   const showStylePrompts = !hasPrompt && !templateFile
 
+  const originalPromptShortcuts = [
+    {
+      label: '像素守夜人',
+      prompt: '一位提着风灯、披深色斗篷的像素守夜人',
+    },
+    {
+      label: '轻装信使',
+      prompt: '轻装信使，侧视像素风，轮廓清晰，动作轻快',
+    },
+  ] as const
+
   useEffect(
     () => () => {
       submitAbortController.current?.abort()
+      if (handoffTimer.current) clearTimeout(handoffTimer.current)
     },
     [],
   )
@@ -270,20 +304,31 @@ function QuickStartInput({
     const abortController = new AbortController()
     submitAbortController.current = abortController
     setSubmitting(true)
+    setEntryTransition('leaving')
     setError(null)
     try {
-      const session = templateFile
-        ? await service.startWithUploadedTemplate(
+      const sessionPromise = templateFile
+        ? service.startWithUploadedTemplate(
             templateFile,
             normalizedPrompt,
             abortController.signal,
             actionLoop,
           )
-        : await service.start(normalizedPrompt)
+        : service.start(normalizedPrompt)
+      const handoffPromise = new Promise<void>((resolve) => {
+        handoffTimer.current = setTimeout(() => {
+          handoffTimer.current = null
+          resolve()
+        }, ENTRY_HANDOFF_MS)
+      })
+      const [session] = await Promise.all([sessionPromise, handoffPromise])
       onSessionCreated(session)
       navigate(`/quick-start/${encodeURIComponent(session.runId)}`)
     } catch (cause) {
       if (!abortController.signal.aborted) {
+        if (handoffTimer.current) clearTimeout(handoffTimer.current)
+        handoffTimer.current = null
+        setEntryTransition('idle')
         setError(errorMessage(cause, '创建失败，请稍后重试'))
       }
     } finally {
@@ -300,9 +345,17 @@ function QuickStartInput({
 
       <div
         data-layout="quick-start-entry"
+        data-transition={entryTransition}
         className="relative z-10 grid min-h-[calc(100dvh-3.5rem)] grid-rows-[1fr_auto] gap-6 px-5 py-6 sm:px-8 sm:pb-8 sm:pt-10"
       >
-        <div className="mx-auto grid w-full max-w-3xl content-center gap-5 pb-8 sm:gap-6">
+        <div
+          data-layout="quick-start-entry-stage"
+          className={`mx-auto grid w-full max-w-3xl content-center gap-5 pb-8 transition-[opacity,transform,filter] duration-[460ms] ease-[cubic-bezier(0.55,0,1,0.45)] motion-reduce:transition-none sm:gap-6 ${
+            entryTransition === 'leaving'
+              ? 'pointer-events-none -translate-y-3 scale-[0.985] opacity-0 blur-[7px]'
+              : 'translate-y-0 scale-100 opacity-100 blur-0'
+          }`}
+        >
           <KineticCopyCycle
             active={!templateFile && !submitting}
             as="h1"
@@ -338,25 +391,47 @@ function QuickStartInput({
               </button>
             ))}
           </div>
+          <div
+            data-layout="quick-start-original-shortcuts"
+            data-presence={showStylePrompts ? 'visible' : 'hidden'}
+            aria-hidden={!showStylePrompts}
+            className={`flex flex-wrap justify-center gap-2 transition-[opacity,transform,filter] duration-[460ms] motion-reduce:transition-none ${
+              showStylePrompts
+                ? 'translate-y-0 opacity-100 blur-0'
+                : 'pointer-events-none -translate-y-1 opacity-0 blur-[4px]'
+            }`}
+          >
+            {originalPromptShortcuts.map((shortcut) => (
+              <button
+                key={shortcut.label}
+                type="button"
+                disabled={!showStylePrompts}
+                onClick={() => setPrompt(shortcut.prompt)}
+                className="rounded-full border border-app-line px-3 py-1.5 text-xs font-medium text-app-muted transition hover:border-app-line-strong hover:text-app-accent"
+              >
+                {shortcut.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         <div data-layout="quick-start-composer" className="mx-auto w-full max-w-3xl self-end">
           <form
             onSubmit={(event) => void submit(event)}
-            className="grid items-center gap-1.5 rounded-xl border border-app-line-strong bg-app-surface-raised p-1.5 shadow-app-panel transition-shadow focus-within:border-app-accent focus-within:shadow-[var(--shadow-app-composer-focus)] sm:grid-cols-[1fr_auto_auto]"
+            className="grid items-center gap-1.5 rounded-xl border border-app-line-strong bg-app-surface-raised p-1.5 shadow-app-panel transition-shadow focus-within:border-app-accent sm:grid-cols-[1fr_auto_auto]"
           >
             <label className="min-w-0" htmlFor="quick-start-prompt">
               <span className="sr-only">创作指令</span>
-              <input
+              <textarea
                 id="quick-start-prompt"
-                type="text"
                 aria-label="创作指令"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
+                rows={2}
                 placeholder={
                   templateFile ? '描述动作，可留空生成待机动作…' : '描述角色的外形、身份和气质…'
                 }
-                className="h-10 w-full min-w-0 border-0 bg-transparent px-3 text-[15px] text-app-ink outline-none placeholder:text-app-faint"
+                className="min-h-10 w-full min-w-0 resize-none border-0 bg-transparent px-3 py-2 text-[15px] leading-6 text-app-ink outline-none placeholder:text-app-faint"
               />
             </label>
 
@@ -440,6 +515,149 @@ function QuickStartInput({
   )
 }
 
+function AgentCopy({
+  lines,
+  tone = 'default',
+}: {
+  lines: readonly string[]
+  tone?: 'default' | 'danger'
+}) {
+  return (
+    <div
+      data-agent-copy
+      aria-label={lines.join(' ')}
+      className={`quick-start-agent-copy font-sans ${
+        tone === 'danger' ? 'text-app-danger' : 'text-app-ink-soft'
+      }`}
+    >
+      <p className="text-sm leading-6 font-medium">{lines[0]}</p>
+      {lines.slice(1).map((line) => (
+        <p key={line} className="mt-0.5 max-w-2xl text-[13px] leading-5 text-app-muted">
+          {line}
+        </p>
+      ))}
+    </div>
+  )
+}
+
+function GenerationProgress({
+  label,
+  messages,
+}: {
+  label: string
+  messages: readonly KineticCopyMessage[]
+}) {
+  return (
+    <div data-generation-progress className="min-h-8 overflow-hidden">
+      <KineticCopyCycle
+        active
+        ariaLabel={label}
+        messages={messages}
+        motionMode="characters"
+        firstCycleMs={7_540}
+        cycleMs={8_000}
+        loopStartIndex={0}
+        className="quick-start-agent-copy quick-start-generation-shimmer justify-items-start text-left font-serif text-[17px] leading-7 font-medium tracking-[-0.025em] text-app-ink"
+      />
+    </div>
+  )
+}
+
+function UserTurn({ children }: { children: ReactNode }) {
+  return (
+    <div
+      data-user-turn
+      className="ml-auto max-w-[78%] rounded-[1.15rem] rounded-br-md bg-app-surface-muted px-4 py-2.5 text-left text-sm leading-6 text-app-ink-soft"
+    >
+      <span>{children}</span>
+    </div>
+  )
+}
+
+function AgentTurn({
+  step,
+  current,
+  children,
+}: {
+  step: 'character-template' | 'action-first-frame' | 'action-full-frame'
+  current: boolean
+  children: ReactNode
+}) {
+  return (
+    <section
+      data-agent-turn={step}
+      data-current-turn={String(current)}
+      className={`quick-start-agent-turn min-w-0 transition-opacity duration-200 ${
+        current ? 'opacity-100' : 'opacity-55'
+      }`}
+    >
+      <div className="grid min-w-0 gap-4">{children}</div>
+    </section>
+  )
+}
+
+function AssetVisual({
+  src,
+  alt,
+  className,
+  priority = false,
+}: {
+  src: string
+  alt: string
+  className: string
+  priority?: boolean
+}) {
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading={priority ? 'eager' : 'lazy'}
+      decoding="async"
+      fetchPriority={priority ? 'high' : 'auto'}
+      className={className}
+    />
+  )
+}
+
+const GENERATION_DOTS = Array.from({ length: 432 }, (_, index) => {
+  const column = index % 24
+  const row = Math.floor(index / 24)
+  const noise = ((column * 37 + row * 61 + index * 17) % 101) / 100
+  const wave = (Math.sin(column * 0.72 + row * 0.41) + 1) / 2
+  const level = 0.3 + (noise * 0.55 + wave * 0.45) * 0.7
+  const delay = Math.round(((column / 23) * 0.48 + (row / 17) * 0.3 + noise * 0.22) * 900)
+  return { delay, level: level.toFixed(2) }
+})
+
+function GenerationCanvas({ label }: { label: string }) {
+  return (
+    <div
+      role="img"
+      aria-label={label}
+      data-generation-state="generating"
+      data-generation-motion="continuous"
+      data-reveal="generation-canvas"
+      className="quick-start-generation-canvas"
+    >
+      <div className="quick-start-generation-dots" aria-hidden="true">
+        {GENERATION_DOTS.map(({ delay, level }, index) => (
+          <i
+            key={index}
+            data-generation-dot
+            className="quick-start-generation-dot"
+            style={
+              {
+                '--generation-delay': `${delay}ms`,
+                '--generation-level': level,
+              } as CSSProperties
+            }
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
 function QuickStartRun({
   service,
   runId,
@@ -468,6 +686,7 @@ function QuickStartRun({
   const [confirmingCandidate, setConfirmingCandidate] = useState(false)
   const [confirmingFirstFrame, setConfirmingFirstFrame] = useState(false)
   const automaticPublishAttempt = useRef<string | null>(null)
+  const transcriptScrollRegion = useRef<HTMLElement>(null)
 
   useEffect(() => {
     let active = true
@@ -528,9 +747,23 @@ function QuickStartRun({
     ])
       .then(([nextCandidates, nextFirstFrameCandidates, nextFrames, nextExportModel]) => {
         if (!active) return
-        setCandidates(nextCandidates)
-        setFirstFrameCandidates(nextFirstFrameCandidates)
-        setActionFrames(nextFrames)
+        const templateIsSelecting = run.nodes.some(
+          (node) =>
+            node.type === 'character-template' &&
+            node.status === 'active' &&
+            node.phase === 'selecting',
+        )
+        const firstFrameIsSelecting = run.nodes.some(
+          (node) =>
+            node.type === 'action-first-frame' &&
+            node.status === 'active' &&
+            node.phase === 'selecting',
+        )
+        if (templateIsSelecting && nextCandidates.length > 0) setCandidates(nextCandidates)
+        if (firstFrameIsSelecting && nextFirstFrameCandidates.length > 0) {
+          setFirstFrameCandidates(nextFirstFrameCandidates)
+        }
+        if (nextFrames.length > 0) setActionFrames(nextFrames)
         setExportModel(nextExportModel)
       })
       .catch((cause) => {
@@ -541,33 +774,32 @@ function QuickStartRun({
     }
   }, [run, session])
 
-  const publishToPlaytest = useCallback(async () => {
+  const saveCompletedAction = useCallback(async () => {
     if (publishing || !session) return
     setPublishing(true)
     setError(null)
     try {
       const approved = await session.approveReview()
       setRun(approved)
-      const info = session.getCharacterInfo() ?? (await session.resolveCharacterInfo())
-      if (!info) throw new Error('动作已生成，但没有找到对应的角色资产')
-      const approvedAction = latestActionStep(approved)
-      const actionId = approvedAction?.type === 'action-full-frame' ? approvedAction.id : undefined
-      navigate(playtestPath(info.characterId, info.outfitId, actionId))
     } catch (cause) {
-      setError(errorMessage(cause, '导入预览台失败'))
+      setError(errorMessage(cause, '保存角色失败，请稍后重试'))
     } finally {
       setPublishing(false)
     }
-  }, [navigate, publishing, session])
+  }, [publishing, session])
 
   useEffect(() => {
     const publishKey = run ? automaticPublishKey(run) : null
     if (publishKey === null || publishing || automaticPublishAttempt.current === publishKey) return
 
-    // 每个版本只自动尝试一次；失败后由页面保留的重试按钮交给用户明确触发。
     automaticPublishAttempt.current = publishKey
-    void publishToPlaytest()
-  }, [publishToPlaytest, publishing, run])
+    void saveCompletedAction()
+  }, [publishing, run, saveCompletedAction])
+
+  useEffect(() => {
+    const region = transcriptScrollRegion.current
+    region?.scrollTo?.({ top: region.scrollHeight, behavior: 'smooth' })
+  }, [actionFrames, candidates, firstFrameCandidates, run])
 
   if (!run) {
     return (
@@ -600,8 +832,6 @@ function QuickStartRun({
 
   const revision = run
   const status = describeRun(run, revision)
-  const passedCount = revision.nodes.filter((node) => node.status === 'passed').length
-
   const actionStep = latestActionStep(revision)
   const firstFrameStep = latestActionFirstFrame(revision)
   const templateStep = revision.nodes.find(
@@ -610,14 +840,14 @@ function QuickStartRun({
   const reviewStep = actionStep ? pairedReviewStep(revision, actionStep.id) : null
   const canPublish =
     actionFrames.length > 0 && (reviewStep?.status === 'active' || reviewStep?.status === 'passed')
-  const isActionActive = actionStep?.status === 'active'
+  const workflowIsActive =
+    revision.nodes.some((node) => !node.deletedAt && node.status === 'active') &&
+    !workflowHasFailure(revision)
   const isActionFailed = actionStep?.status === 'failed'
   const isTemplateSelecting =
     templateStep?.status === 'active' && templateStep.phase === 'selecting'
   const isFirstFrameSelecting =
     firstFrameStep?.status === 'active' && firstFrameStep.phase === 'selecting'
-  const isFirstFrameGenerating =
-    firstFrameStep?.status === 'active' && firstFrameStep.phase === 'generating'
   const isFirstFrameFailed = firstFrameStep?.status === 'failed'
 
   async function interrupt() {
@@ -626,6 +856,18 @@ function QuickStartRun({
       setRun(await session.interrupt())
     } catch (cause) {
       setError(errorMessage(cause, '中断自动制作失败'))
+    }
+  }
+
+  async function openPlaytest() {
+    if (!session) return
+    setError(null)
+    try {
+      const info = session.getCharacterInfo() ?? (await session.resolveCharacterInfo())
+      if (!info) throw new Error('没有找到对应的角色资产')
+      navigate(playtestPath(info.characterId, info.outfitId, actionStep?.id))
+    } catch (cause) {
+      setError(errorMessage(cause, '打开 Play Test 失败'))
     }
   }
 
@@ -680,325 +922,425 @@ function QuickStartRun({
     }
   }
 
+  function continueConversation(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (isTemplateSelecting) {
+      void confirmSelection()
+      return
+    }
+    if (isFirstFrameSelecting) {
+      void confirmFirstFrame()
+      return
+    }
+  }
+
+  const composerPlaceholder = isTemplateSelecting
+    ? selectedCandidate
+      ? '描述这个角色接下来要做的动作…'
+      : '先从上面选择一个角色…'
+    : isFirstFrameSelecting
+      ? selectedFirstFrame
+        ? '按发送确认这张首帧…'
+        : '先从上面选择一个动作首帧…'
+      : workflowHasFailure(run)
+        ? '这次未完成，可以新建一次创作…'
+        : canPublish
+          ? '确认保存后，还可以继续描述修改…'
+          : '制作中，完成后可以继续修改…'
+
+  const composerCanSubmit =
+    (isTemplateSelecting && Boolean(selectedCandidate)) ||
+    (isFirstFrameSelecting && Boolean(selectedFirstFrame))
+  const selectedTemplateUrl = templateStep?.selectedImageUrl
+  const selectedFirstFrameUrl = firstFrameStep?.selectedFirstFrameUrl
+  const requestedAction = firstFrameStep?.input.prompt || firstFrameStep?.input.name
+  const chosenTemplateUrl = selectedTemplateUrl ?? selectedCandidate
+  const chosenFirstFrameUrl = selectedFirstFrameUrl ?? selectedFirstFrame
+  const characterTurnIsCurrent = !firstFrameStep
+  const firstFrameTurnIsCurrent = Boolean(firstFrameStep) && actionStep?.status === 'locked'
+  const actionTurnIsCurrent = Boolean(actionStep && actionStep.status !== 'locked')
+
   return (
-    <section className="relative min-h-screen overflow-hidden border border-app-line bg-app-canvas text-app-ink shadow-app-page">
-      <AmbientGrid />
-      <div className="relative z-10 grid min-h-screen grid-rows-[auto_1fr_auto] gap-6 p-5 sm:p-8">
-        <header className="flex flex-wrap items-start justify-between gap-4">
-          <div>
-            <p className="font-mono text-[10px] font-bold tracking-[0.16em] text-app-muted">
-              QUICK START / RUN {run.id}
-            </p>
-            <h1 className="mt-2 font-serif text-3xl tracking-[-0.03em] sm:text-4xl">
-              {workflowPrompt(run) || '未命名角色创作'}
-            </h1>
+    <section className="relative min-h-screen overflow-hidden bg-app-canvas pt-14 text-app-ink">
+      <div
+        data-testid="quick-start-run"
+        data-layout="agent-shell"
+        className="relative h-[calc(100dvh-3.5rem)] overflow-hidden"
+      >
+        <span aria-live="polite" className="sr-only">
+          {status.title}
+        </span>
+
+        <main
+          ref={transcriptScrollRegion}
+          data-layout="quick-start-scroll-region"
+          className="absolute inset-0 overflow-y-auto px-5 pt-14 pb-32 sm:px-8 sm:pt-10 sm:pb-36"
+        >
+          <div
+            data-testid="quick-start-transcript"
+            className="mx-auto grid min-h-full w-full max-w-3xl content-end gap-7 pb-8 sm:gap-9"
+          >
+            <UserTurn>{workflowPrompt(run) || '未命名角色创作'}</UserTurn>
+
+            <AgentTurn step="character-template" current={characterTurnIsCurrent}>
+              {candidates.length ? (
+                <>
+                  <AgentCopy
+                    lines={[
+                      '已生成 3 个角色方向。',
+                      isTemplateSelecting
+                        ? '选择一个方案，再描述它接下来的动作。'
+                        : '角色方案已确认。',
+                    ]}
+                  />
+                  <div
+                    data-layout="agent-result-set"
+                    className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                  >
+                    {candidates.map((candidateUrl, index) => (
+                      <button
+                        key={`${candidateUrl}:${index}`}
+                        type="button"
+                        aria-label={`选择角色方案 ${index + 1}`}
+                        aria-pressed={chosenTemplateUrl === candidateUrl}
+                        disabled={!isTemplateSelecting || confirmingCandidate}
+                        onClick={() => setSelectedCandidate(candidateUrl)}
+                        data-asset-choice="true"
+                        data-reveal="card"
+                        style={{ '--reveal-index': index } as CSSProperties}
+                        className={`quick-start-reveal-card group/asset relative aspect-square overflow-hidden rounded-2xl border bg-app-surface-raised text-left transition duration-200 ${
+                          chosenTemplateUrl === candidateUrl
+                            ? 'border-app-accent ring-1 ring-app-accent'
+                            : 'border-app-line hover:border-app-line-strong'
+                        } disabled:cursor-default disabled:hover:border-app-line`}
+                      >
+                        <span
+                          data-asset-frame
+                          className="block h-full min-h-0 bg-app-surface-muted"
+                        >
+                          <AssetVisual
+                            src={candidateUrl}
+                            alt={`角色图候选 ${index + 1}`}
+                            priority={index === 0}
+                            className="quick-start-generated-image aspect-square h-full w-full object-contain [image-rendering:pixelated]"
+                          />
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void regenerate()}
+                    className="w-fit rounded-xl border border-app-line-strong px-4 py-2 text-xs font-semibold text-app-ink-soft transition hover:border-app-accent hover:text-app-accent"
+                  >
+                    重新生成
+                  </button>
+                </>
+              ) : templateStep?.status === 'passed' && selectedTemplateUrl ? (
+                <>
+                  <AgentCopy lines={['角色方案已确认。']} />
+                  <div
+                    data-layout="agent-result-set"
+                    className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                  >
+                    <AssetVisual
+                      src={selectedTemplateUrl}
+                      alt="已选择的角色"
+                      className="aspect-square w-full rounded-2xl border border-app-line bg-app-surface-muted object-contain [image-rendering:pixelated]"
+                    />
+                  </div>
+                </>
+              ) : workflowHasFailure(revision) ? (
+                <>
+                  <AgentCopy
+                    tone="danger"
+                    lines={[
+                      '这次没有生成完成',
+                      '你的描述还在。换一种说法，或者补充新的要求后再试一次。',
+                    ]}
+                  />
+                </>
+              ) : (
+                <>
+                  <GenerationProgress
+                    label="角色生成进度"
+                    messages={TEMPLATE_GENERATION_MESSAGES}
+                  />
+                  <div
+                    data-layout="agent-result-set"
+                    className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                  >
+                    <GenerationCanvas label="角色图生成画布" />
+                  </div>
+                </>
+              )}
+            </AgentTurn>
+
+            {firstFrameStep ? (
+              <>
+                <UserTurn>{requestedAction || '待机'}</UserTurn>
+                <AgentTurn step="action-first-frame" current={firstFrameTurnIsCurrent}>
+                  {firstFrameCandidates.length ? (
+                    <>
+                      <AgentCopy
+                        lines={[
+                          isFirstFrameSelecting ? '已生成 3 个动作起始姿态。' : '动作首帧',
+                          isFirstFrameSelecting
+                            ? '选择一个起始姿态，随后生成完整动作。'
+                            : '动作起始姿态已确认。',
+                        ]}
+                      />
+                      <div
+                        data-layout="agent-result-set"
+                        className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                      >
+                        {firstFrameCandidates.map((frame, index) => (
+                          <button
+                            key={`${frame.imageUrl}:${index}`}
+                            type="button"
+                            aria-label={`选择动作首帧 ${index + 1}`}
+                            aria-pressed={chosenFirstFrameUrl === frame.imageUrl}
+                            disabled={!isFirstFrameSelecting || confirmingFirstFrame}
+                            onClick={() => setSelectedFirstFrame(frame.imageUrl)}
+                            data-asset-choice="true"
+                            data-result-priority={index === 0 ? 'primary' : 'alternative'}
+                            data-reveal="card"
+                            style={{ '--reveal-index': index } as CSSProperties}
+                            className={`quick-start-reveal-card relative overflow-hidden rounded-2xl border bg-app-surface-raised text-left transition ${
+                              chosenFirstFrameUrl === frame.imageUrl
+                                ? 'border-app-accent ring-1 ring-app-accent'
+                                : 'border-app-line hover:border-app-line-strong'
+                            } disabled:cursor-default disabled:hover:border-app-line`}
+                          >
+                            <span
+                              data-asset-frame
+                              className="block aspect-square bg-app-surface-muted"
+                            >
+                              <AssetVisual
+                                src={frame.imageUrl}
+                                alt={`动作首帧候选 ${index + 1}`}
+                                priority={index === 0}
+                                className="quick-start-generated-image h-full w-full object-contain [image-rendering:pixelated]"
+                              />
+                            </span>
+                          </button>
+                        ))}
+                      </div>
+                      {selectedFirstFrame ? (
+                        <button
+                          type="button"
+                          onClick={() => void confirmFirstFrame()}
+                          disabled={confirmingFirstFrame}
+                          className="w-fit rounded-xl bg-app-accent px-5 py-2.5 text-sm font-bold text-app-on-accent disabled:opacity-50"
+                        >
+                          {confirmingFirstFrame ? '正在确认…' : '确认首帧，生成完整动作'}
+                        </button>
+                      ) : null}
+                    </>
+                  ) : firstFrameStep.status === 'passed' && selectedFirstFrameUrl ? (
+                    <>
+                      <AgentCopy lines={['动作起始姿态已确认。']} />
+                      <div
+                        data-layout="agent-result-set"
+                        className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                      >
+                        <AssetVisual
+                          src={selectedFirstFrameUrl}
+                          alt="已选择的动作首帧"
+                          className="aspect-square w-full rounded-2xl border border-app-line bg-app-surface-muted object-contain [image-rendering:pixelated]"
+                        />
+                      </div>
+                    </>
+                  ) : isFirstFrameFailed ? (
+                    <>
+                      <AgentCopy
+                        tone="danger"
+                        lines={['动作首帧生成失败', '内容还在，可以在下面修改要求后重试。']}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <GenerationProgress
+                        label="动作首帧生成进度"
+                        messages={FIRST_FRAME_GENERATION_MESSAGES}
+                      />
+                      <div
+                        data-layout="agent-result-set"
+                        className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                      >
+                        <GenerationCanvas label="动作首帧生成画布" />
+                      </div>
+                    </>
+                  )}
+                </AgentTurn>
+              </>
+            ) : null}
+
+            {actionStep && actionStep.status !== 'locked' ? (
+              <>
+                <AgentTurn step="action-full-frame" current={actionTurnIsCurrent}>
+                  {actionFrames.length > 0 ? (
+                    <>
+                      <AgentCopy lines={[`动作已完成，共 ${actionFrames.length} 帧。`]} />
+                      <div
+                        data-layout="agent-result-set"
+                        className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                      >
+                        <AssetVisual
+                          src={actionFrames[0]!.imageUrl}
+                          alt="完整动作预览"
+                          priority
+                          className="quick-start-generated-image aspect-square w-full rounded-2xl border border-app-line bg-app-surface-muted object-contain [image-rendering:pixelated]"
+                        />
+                      </div>
+                      {reviewStep?.status === 'passed' ? (
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              navigate(`/projects/${encodeURIComponent(revision.projectId)}/assets`)
+                            }
+                            className="rounded-lg border border-app-line-strong px-3 py-1.5 text-xs font-semibold text-app-ink-soft transition hover:border-app-accent hover:text-app-accent"
+                          >
+                            跳转到资产工作台
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void openPlaytest()}
+                            className="rounded-lg border border-app-line-strong px-3 py-1.5 text-xs font-semibold text-app-ink-soft transition hover:border-app-accent hover:text-app-accent"
+                          >
+                            跳转到 Play Test
+                          </button>
+                        </div>
+                      ) : null}
+                      <div className="flex max-w-full gap-1.5 overflow-x-auto pb-1">
+                        {actionFrames.map((frame, index) => (
+                          <AssetVisual
+                            key={`${frame.imageUrl}:${index}`}
+                            src={frame.imageUrl}
+                            alt={`动作第 ${index + 1} 帧`}
+                            className="quick-start-generated-frame size-12 shrink-0 rounded-lg border border-app-line bg-app-surface-muted object-contain [image-rendering:pixelated]"
+                          />
+                        ))}
+                      </div>
+                      {reviewStep?.status === 'active' && canPublish && error ? (
+                        <button
+                          type="button"
+                          onClick={() => void saveCompletedAction()}
+                          disabled={publishing}
+                          className="w-fit rounded-xl bg-app-accent px-5 py-2.5 text-sm font-bold text-app-on-accent disabled:opacity-50"
+                        >
+                          {publishing ? '正在保存…' : '重新保存'}
+                        </button>
+                      ) : reviewStep?.status === 'passed' ? (
+                        <p className="text-sm font-medium text-app-accent">角色已经保存到资产库</p>
+                      ) : canPublish ? (
+                        <p className="text-sm text-app-muted">正在保存角色…</p>
+                      ) : null}
+                    </>
+                  ) : isActionFailed ? (
+                    <>
+                      <AgentCopy
+                        tone="danger"
+                        lines={['动作生成失败', '内容还在，可以在下面修改要求后重试。']}
+                      />
+                    </>
+                  ) : (
+                    <>
+                      <GenerationProgress
+                        label="完整动作生成进度"
+                        messages={ACTION_GENERATION_MESSAGES}
+                      />
+                      <div
+                        data-layout="agent-result-set"
+                        className="grid w-full max-w-2xl grid-cols-3 gap-3"
+                      >
+                        <GenerationCanvas label="完整动作生成画布" />
+                      </div>
+                    </>
+                  )}
+                </AgentTurn>
+              </>
+            ) : null}
+
+            {error ? (
+              <p
+                role="alert"
+                className="ml-10 rounded-xl bg-app-danger/8 px-4 py-3 text-sm text-app-danger"
+              >
+                {error}
+              </p>
+            ) : null}
+            <div data-testid="quick-start-transcript-end" />
           </div>
-          <div className="flex items-center gap-3">
+        </main>
+
+        <footer
+          data-testid="quick-start-composer"
+          data-position="floating"
+          className="absolute right-5 bottom-4 left-5 z-10 mx-auto w-auto max-w-3xl sm:right-8 sm:bottom-6 sm:left-8"
+        >
+          <div className="mb-2 flex flex-wrap items-center justify-end gap-2">
             {exportModel ? (
               <ExportButton
                 model={exportModel}
                 className="border-app-accent bg-app-accent text-app-on-accent hover:bg-app-accent-hover"
               />
             ) : null}
-            <div
-              className="flex items-center gap-3 rounded-xl border border-app-line bg-app-surface-raised/90 px-4 py-3"
-              aria-live="polite"
-            >
-              <i
-                className={`h-2.5 w-2.5 rounded-full ${
-                  workflowIsActive(run) ? 'animate-pulse bg-app-accent' : 'bg-app-faint'
-                } motion-reduce:animate-none`}
-                aria-hidden="true"
+            {workflowIsActive ? (
+              <button
+                type="button"
+                onClick={() => void interrupt()}
+                className="rounded-lg border border-app-line-strong bg-app-surface-raised/96 px-3 py-2 text-xs font-semibold text-app-ink-soft backdrop-blur-xl transition hover:border-app-accent hover:text-app-accent"
+              >
+                中断自动制作
+              </button>
+            ) : null}
+            {candidates.length || workflowHasFailure(revision) ? (
+              <button
+                type="button"
+                onClick={() => navigate('/quick-start')}
+                className="rounded-lg border border-app-line-strong bg-app-surface-raised/96 px-3 py-2 text-xs font-semibold text-app-ink-soft backdrop-blur-xl transition hover:border-app-accent hover:text-app-accent"
+              >
+                新建一次创作
+              </button>
+            ) : null}
+          </div>
+          {isTemplateSelecting && isCustomActionDescription(actionDescription) ? (
+            <label className="mb-2 flex items-start gap-2 rounded-xl border border-app-line bg-app-surface-raised/96 px-3 py-2 text-[11px] text-app-muted backdrop-blur-xl">
+              <input
+                type="checkbox"
+                checked={actionLoop}
+                onChange={(event) => setActionLoop(event.target.checked)}
+                className="mt-0.5"
               />
-              <span>
-                <small className="block font-mono text-[8px] tracking-[0.12em] text-app-faint">
-                  CURRENT STATUS
-                </small>
-                <b className="text-sm text-app-accent">{status.title}</b>
-              </span>
-            </div>
-          </div>
-        </header>
-
-        <div className="grid min-h-0 gap-5 lg:grid-cols-[1.35fr_0.65fr]">
-          <section className="grid min-h-[340px] place-items-center overflow-hidden rounded-[1.4rem] border border-app-line bg-app-surface/90 p-5">
-            {actionFrames.length > 0 ? (
-              <div className="grid w-full grid-cols-4 gap-2 sm:grid-cols-8">
-                {actionFrames.map((frame, index) => (
-                  <img
-                    key={`${frame.imageUrl}:${index}`}
-                    src={frame.imageUrl}
-                    alt={`动作第 ${index + 1} 帧`}
-                    loading="lazy"
-                    decoding="async"
-                    className="aspect-square w-full border border-app-line bg-app-surface-muted object-contain [image-rendering:pixelated]"
-                  />
-                ))}
-              </div>
-            ) : isActionActive ? (
-              <div className="grid place-items-center gap-5 text-center">
-                <div className="relative grid h-44 w-44 place-items-center rounded-[1.4rem] border border-dashed border-app-line-strong bg-app-surface-muted">
-                  <i className="h-12 w-12 animate-pulse rounded-full border border-app-line-strong bg-app-accent-soft shadow-app-pulse motion-reduce:animate-none" />
-                </div>
-                <span>
-                  <b className="block text-base text-app-ink-soft">正在生成动作</b>
-                  <small className="mt-2 block max-w-md leading-6 text-app-muted">
-                    正在生成动作帧，请稍候…
-                  </small>
-                </span>
-              </div>
-            ) : isActionFailed ? (
-              <div className="grid place-items-center gap-5 text-center">
-                <b className="text-base text-app-danger">动作生成失败</b>
-                <small className="max-w-md leading-6 text-app-muted">
-                  {typeof actionStep?.error === 'string' ? actionStep.error : '动作生成失败'}
-                </small>
-              </div>
-            ) : isFirstFrameSelecting && firstFrameCandidates.length ? (
-              <div className="grid w-full gap-4">
-                <div className="mx-auto max-w-xl text-center">
-                  <h2 className="text-lg font-semibold text-app-ink-soft">选择动作首帧</h2>
-                  <p className="mt-2 text-sm leading-6 text-app-muted">
-                    确认首帧后，系统会自动使用视频裁剪路线生成 32 帧完整动作。
-                  </p>
-                </div>
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                  {firstFrameCandidates.map((frame, index) => (
-                    <button
-                      key={`${frame.imageUrl}:${index}`}
-                      type="button"
-                      onClick={() => setSelectedFirstFrame(frame.imageUrl)}
-                      className={`overflow-hidden rounded-xl border-2 p-2 text-left transition ${
-                        selectedFirstFrame === frame.imageUrl
-                          ? 'border-app-accent bg-app-accent-soft'
-                          : 'border-app-line bg-app-surface-muted hover:border-app-line-strong'
-                      }`}
-                    >
-                      <img
-                        src={frame.imageUrl}
-                        alt={`动作首帧候选 ${index + 1}`}
-                        loading="eager"
-                        decoding="async"
-                        fetchPriority={index === 0 ? 'high' : 'auto'}
-                        className="aspect-square w-full object-contain [image-rendering:pixelated]"
-                      />
-                      <p className="mt-2 font-mono text-[9px] tracking-[0.1em] text-app-muted">
-                        FIRST FRAME {String(index + 1).padStart(2, '0')}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-                <div className="flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() => void confirmFirstFrame()}
-                    disabled={!selectedFirstFrame || confirmingFirstFrame}
-                    className="rounded-xl bg-app-accent px-6 py-3 text-sm font-bold text-app-on-accent transition hover:bg-app-accent-hover disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    {confirmingFirstFrame ? '正在确认…' : '确认首帧，生成完整动作'}
-                  </button>
-                </div>
-              </div>
-            ) : isFirstFrameGenerating ? (
-              <div className="grid place-items-center gap-5 text-center">
-                <div className="relative grid h-44 w-44 place-items-center rounded-[1.4rem] border border-dashed border-app-line-strong bg-app-surface-muted">
-                  <i className="h-12 w-12 animate-pulse rounded-full border border-app-line-strong bg-app-accent-soft shadow-app-pulse motion-reduce:animate-none" />
-                </div>
-                <span>
-                  <b className="block text-base text-app-ink-soft">正在生成动作首帧</b>
-                  <small className="mt-2 block max-w-md leading-6 text-app-muted">
-                    首帧就绪后，需要确认一次，再自动生成 32 帧完整动作。
-                  </small>
-                </span>
-              </div>
-            ) : isFirstFrameFailed ? (
-              <div className="grid place-items-center gap-5 text-center">
-                <b className="text-base text-app-danger">动作首帧生成失败</b>
-                <small className="max-w-md leading-6 text-app-muted">
-                  {typeof firstFrameStep?.error === 'string'
-                    ? firstFrameStep.error
-                    : '动作首帧生成失败'}
-                </small>
-              </div>
-            ) : isTemplateSelecting && candidates.length ? (
-              <div className="grid w-full gap-4">
-                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
-                  {candidates.map((candidateUrl, index) => (
-                    <button
-                      key={`${candidateUrl}:${index}`}
-                      type="button"
-                      onClick={() => setSelectedCandidate(candidateUrl)}
-                      className={`overflow-hidden rounded-xl border-2 p-2 text-left transition ${
-                        selectedCandidate === candidateUrl
-                          ? 'border-app-accent bg-app-accent-soft'
-                          : 'border-app-line bg-app-surface-muted hover:border-app-line-strong'
-                      }`}
-                    >
-                      <img
-                        src={candidateUrl}
-                        alt={`角色图候选 ${index + 1}`}
-                        loading="eager"
-                        decoding="async"
-                        fetchPriority={index === 0 ? 'high' : 'auto'}
-                        className="aspect-square w-full object-contain [image-rendering:pixelated]"
-                      />
-                      <p className="mt-2 font-mono text-[9px] tracking-[0.1em] text-app-muted">
-                        CANDIDATE {String(index + 1).padStart(2, '0')}
-                      </p>
-                    </button>
-                  ))}
-                </div>
-                <div className="mx-auto flex w-full max-w-xl flex-col gap-3">
-                  <label className="grid gap-1.5" htmlFor="quick-start-action-description">
-                    <span className="text-[11px] font-semibold text-app-ink-soft">
-                      动作描述（可选，留空生成待机动作）
-                    </span>
-                    <input
-                      id="quick-start-action-description"
-                      value={actionDescription}
-                      onChange={(event) => setActionDescription(event.target.value)}
-                      placeholder="例如：在画板上画画、挥舞灯笼、扫地…"
-                      className="rounded-xl border border-app-line bg-app-surface-raised px-4 py-2.5 text-sm text-app-ink outline-none placeholder:text-app-faint focus:border-app-line-strong"
-                    />
-                  </label>
-                  {isCustomActionDescription(actionDescription) ? (
-                    <label className="flex items-start gap-2 text-xs text-app-muted">
-                      <input
-                        type="checkbox"
-                        checked={actionLoop}
-                        onChange={(event) => setActionLoop(event.target.checked)}
-                        className="mt-0.5"
-                      />
-                      <span>
-                        循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾
-                      </span>
-                    </label>
-                  ) : null}
-                  <div className="flex justify-center gap-3">
-                    <button
-                      type="button"
-                      onClick={() => void regenerate()}
-                      className="rounded-xl border border-app-line-strong px-5 py-3 text-sm font-semibold text-app-ink-soft transition hover:border-app-line-strong"
-                    >
-                      重新生成
-                    </button>
-                    {selectedCandidate ? (
-                      <button
-                        type="button"
-                        onClick={() => void confirmSelection()}
-                        disabled={confirmingCandidate}
-                        className="rounded-xl bg-app-accent px-6 py-3 text-sm font-bold text-app-on-accent transition hover:bg-app-accent-hover"
-                      >
-                        {confirmingCandidate ? '正在提交…' : '确认选择，继续下一步'}
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-            ) : (
-              <div className="grid place-items-center gap-5 text-center">
-                <div className="relative grid h-44 w-44 place-items-center rounded-[1.4rem] border border-dashed border-app-line-strong bg-app-surface-muted">
-                  <i className="h-12 w-12 animate-pulse rounded-full border border-app-line-strong bg-app-accent-soft shadow-app-pulse motion-reduce:animate-none" />
-                </div>
-                <span>
-                  <b className="block text-base text-app-ink-soft">{status.title}</b>
-                  <small className="mt-2 block max-w-md leading-6 text-app-muted">
-                    {status.description}
-                  </small>
-                </span>
-              </div>
-            )}
-          </section>
-
-          <aside className="rounded-[1.4rem] border border-app-line bg-app-surface-raised/95 p-5">
-            <p className="font-mono text-[9px] font-bold tracking-[0.13em] text-app-faint">
-              WORKFLOW RUN
-            </p>
-            <h2 className="mt-2 text-lg font-semibold">制作进度</h2>
-            <p className="mt-2 text-xs leading-6 text-app-muted">
-              Quick Start 隐藏节点操作，但每一步仍写入同一条 WorkflowRun。
-            </p>
-
-            <ol className="mt-5 grid gap-2">
-              {revision.nodes.map((node, index) => (
-                <li
-                  key={node.id}
-                  className={`grid grid-cols-[28px_1fr_auto] items-center gap-3 rounded-lg border px-3 py-2 ${
-                    node.status === 'active'
-                      ? 'border-app-line-strong bg-app-accent-muted'
-                      : 'border-app-line bg-app-surface'
-                  }`}
-                >
-                  <i
-                    className={`grid h-7 w-7 place-items-center rounded-full text-[9px] not-italic ${
-                      node.status === 'passed'
-                        ? 'bg-app-accent text-app-on-accent'
-                        : node.status === 'active'
-                          ? 'border border-app-accent text-app-accent'
-                          : 'border border-app-line text-app-faint'
-                    }`}
-                  >
-                    {node.status === 'passed' ? '✓' : String(index + 1).padStart(2, '0')}
-                  </i>
-                  <span className="text-xs font-semibold text-app-ink-soft">
-                    {STEP_LABELS[node.type]}
-                  </span>
-                  <small className="text-[9px] text-app-faint">{nodeStatusLabel(node)}</small>
-                </li>
-              ))}
-            </ol>
-          </aside>
-        </div>
-
-        <footer className="rounded-[1.3rem] border border-app-line bg-app-surface-raised/95 p-4 shadow-app-card">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <span>
-              <small className="font-mono text-[8px] tracking-[0.12em] text-app-faint">
-                {passedCount} / {revision.nodes.length} STEPS PASSED
-              </small>
-              <b className="mt-1 block text-sm text-app-ink-soft">{status.title}</b>
-            </span>
-            <div className="flex flex-wrap gap-2">
-              {workflowIsActive(run) ? (
-                <button
-                  type="button"
-                  onClick={() => void interrupt()}
-                  className="rounded-xl border border-app-line-strong px-4 py-2 text-xs font-semibold text-app-ink-soft"
-                >
-                  中断自动制作
-                </button>
-              ) : null}
-              {canPublish && (publishing || error) ? (
-                <button
-                  type="button"
-                  onClick={() => void publishToPlaytest()}
-                  disabled={publishing}
-                  className="rounded-lg bg-app-info px-4 py-2 text-xs font-bold text-app-on-accent transition hover:bg-app-info-hover disabled:cursor-wait disabled:opacity-60"
-                >
-                  {publishing ? '正在自动导入…' : '重新导入预览台'}
-                </button>
-              ) : null}
-              {candidates.length || workflowHasFailure(run) ? (
-                <button
-                  type="button"
-                  onClick={() => navigate('/quick-start')}
-                  className="rounded-xl bg-app-accent px-4 py-2 text-xs font-semibold text-app-on-accent"
-                >
-                  新建一次创作
-                </button>
-              ) : null}
-            </div>
-          </div>
-          {error ? (
-            <p role="alert" className="mt-3 text-sm text-app-danger">
-              {error}
-            </p>
+              <span>循环播放：走路/待机这类可无缝重复的勾选；攻击/跳跃这类做一次的不要勾</span>
+            </label>
           ) : null}
-          {status.error ? (
-            <p role="alert" className="mt-3 text-sm text-app-danger">
-              {status.error}
-            </p>
-          ) : null}
+          <form
+            onSubmit={continueConversation}
+            className="grid grid-cols-[1fr_auto] items-center gap-1.5 rounded-2xl border border-app-line-strong bg-app-surface-raised/96 p-1.5 shadow-app-panel backdrop-blur-xl transition focus-within:border-app-accent"
+          >
+            <label htmlFor="quick-start-continuation" className="min-w-0">
+              <span className="sr-only">继续描述你的想法</span>
+              <input
+                id="quick-start-continuation"
+                aria-label="继续描述你的想法"
+                value={actionDescription}
+                onChange={(event) => setActionDescription(event.target.value)}
+                placeholder={composerPlaceholder}
+                className="h-10 w-full min-w-0 border-0 bg-transparent px-3 text-[15px] text-app-ink outline-none placeholder:text-app-faint"
+              />
+            </label>
+            <button
+              type="submit"
+              aria-label={isTemplateSelecting ? '确认选择，继续下一步' : '发送'}
+              disabled={!composerCanSubmit}
+              className="grid h-10 w-10 place-items-center rounded-lg bg-app-accent text-app-on-accent transition hover:bg-app-accent-hover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-35"
+            >
+              <ArrowUp aria-hidden="true" size={16} weight="bold" />
+            </button>
+          </form>
         </footer>
       </div>
     </section>
@@ -1025,7 +1367,7 @@ function describeRun(_run: WorkflowRun, workflow: WorkflowRun) {
   if (failedStep) {
     return {
       title: '生成失败',
-      description: '这次失败已保存在当前运行记录中，不会自动创建第二次任务。',
+      description: '你的描述仍然保留在这里，可以修改后重新尝试。',
       error: failedStep?.error || '角色图生成失败',
     }
   }
@@ -1073,6 +1415,13 @@ function describeRun(_run: WorkflowRun, workflow: WorkflowRun) {
     (n): n is CharacterTemplateWorkflowNode => n.type === 'character-template',
   )
   if (templateNode?.status === 'active') {
+    if (templateNode.phase === 'selecting') {
+      return {
+        title: '选择一个喜欢的角色',
+        description: '选择后可以继续描述这个角色接下来要做的动作。',
+        error: null,
+      }
+    }
     return {
       title: templateNode.generations.length > 0 ? '正在生成角色图' : '正在创建生成任务',
       description:
@@ -1090,7 +1439,12 @@ function describeRun(_run: WorkflowRun, workflow: WorkflowRun) {
   }
 }
 
-/** 只有完整动作和可审核状态同时具备时，才允许自动发布当前版本。 */
+function workflowPrompt(run: WorkflowRun): string {
+  const setup = run.nodes.find((node) => node.type === 'character-setup')
+  return setup?.type === 'character-setup' ? setup.input.prompt : ''
+}
+
+/** 完整动作进入可审核状态后沿用原有自动保存时机，只取消离开 Quick Start 的跳转。 */
 function automaticPublishKey(run: WorkflowRun): string | null {
   const actionStep = latestActionStep(run)
   const reviewStep = actionStep ? pairedReviewStep(run, actionStep.id) : null
@@ -1100,20 +1454,8 @@ function automaticPublishKey(run: WorkflowRun): string | null {
   return hasFrames && reviewReady && actionStep ? `${run.id}:${actionStep.id}` : null
 }
 
-function workflowPrompt(run: WorkflowRun): string {
-  const setup = run.nodes.find((node) => node.type === 'character-setup')
-  return setup?.type === 'character-setup' ? setup.input.prompt : ''
-}
-
 function workflowHasFailure(run: WorkflowRun): boolean {
   return run.nodes.some((node) => !node.deletedAt && node.status === 'failed')
-}
-
-function workflowIsActive(run: WorkflowRun): boolean {
-  return (
-    run.nodes.some((node) => !node.deletedAt && node.status === 'active') &&
-    !workflowHasFailure(run)
-  )
 }
 
 /** 返回当前 Run 最后追加且未删除的动作；旧动作只保留作历史结果。 */
@@ -1141,14 +1483,6 @@ function pairedReviewStep(workflow: WorkflowRun, actionStepId: string) {
         node.type === 'review' && !node.deletedAt && node.dependsOnNodeIds.includes(actionStepId),
     ) ?? null
   )
-}
-
-function nodeStatusLabel(node: WorkflowNode) {
-  if (node.deletedAt) return '已删除'
-  if (node.status === 'passed') return '完成'
-  if (node.status === 'active') return '当前'
-  if (node.status === 'failed') return '失败'
-  return '等待'
 }
 
 function errorMessage(cause: unknown, fallback: string) {
