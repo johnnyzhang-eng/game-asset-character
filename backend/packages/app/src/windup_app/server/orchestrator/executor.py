@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import threading
 from collections.abc import Callable
@@ -298,6 +299,10 @@ class ActionTaskExecutor:
         # i2v —— 两条路线的画风、成本、多朝向能力都不同,悄悄换一条等于让调用方拿着
         # 错误的前提做后续决定,而帧数、时长、成色全都正常,没有任何一道会红。
         model_url = (input.model_3d_url or "").strip()
+        # 三渲二没有一张 raster 母版可言(入参是绑骨模型),judge 判官的"多出来的物体"
+        # 四问同样无从问起 —— 与 master_check 那道预检一起跳过,见 generate_rendered
+        # 的说明。留 None 而不是编个假 master,quality_gate.review 据此不判(见下方判据)。
+        master: bytes | None = None
         if model_url:
             rigged = (self._fetch_model3d or self._download_model3d)(model_url)
             logger.info(
@@ -321,16 +326,25 @@ class ActionTaskExecutor:
             {"index": i, "image_url": upload(png), "duration_ms": dur}
             for i, (png, dur) in enumerate(zip(checked, generated.durations))
         ]
+        # quality / prompt_version 只落库记账,不在此处据成色改判决:交付/重试是产品
+        # 决策,该由读这本账的下游按阈值决定,任务状态仍只反映"生成流程是否跑完"。
         result = {
             "type": "character_action",
             "action_type": input.action_type.value,
             "frames": frames,
+            "quality": dataclasses.asdict(generated.quality),
+            "prompt_version": generated.prompt_version,
         }
-        decision = quality_gate.review(
-            self._get_judge(), checked, master, input.action_type.value
+        # quality_gate 是另一本账(判官读数),与上面的 quality 分字段存放,见
+        # model.CharacterActionOutput 的字段注释。master 为 None(三渲二路线)时
+        # 不判 —— 判官的问题("多出来的物体"等)全部要拿母版作参照,没有母版无从答起。
+        decision = (
+            quality_gate.review(self._get_judge(), checked, master, input.action_type.value)
+            if master is not None
+            else None
         )
         if decision is not None:
-            result["quality"] = decision.as_payload()
+            result["quality_gate"] = decision.as_payload()
             if decision.blocked:
                 # 帧已经生成、已经上传,钱早就花完了。拦在这里的意义只剩"不把坏产物当成
                 # 交付物交出去";这也正是拦截档默认关着的原因。

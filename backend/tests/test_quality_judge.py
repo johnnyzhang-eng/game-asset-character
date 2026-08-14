@@ -397,7 +397,10 @@ class _SpyGenerator:
         return GeneratedAction(
             frames=[frame, frame],
             durations=[100, 100],
-            quality=ActionQuality(motion_scale=1.0, dead_frames=(), loop_seam=None),
+            quality=ActionQuality(
+                motion_scale=1.0, dead_frames=(), loop_seam=None, subject_blobs=(1, 1),
+            ),
+            prompt_version="test-prompt-v0",
         )
 
 
@@ -443,15 +446,15 @@ def test_shadow_verdict_lands_in_task_result(session_factory, monkeypatch):
 
     assert task.status is TaskStatus.COMPLETED, "shadow 期判官说有问题也照常交付"
     assert len(task.result.frames) == 2
-    assert task.result.quality["problems"] == [quality_gate.PROBLEM_MULTIPLE_SUBJECTS]
-    assert task.result.quality["blocked"] is False
+    assert task.result.quality_gate["problems"] == [quality_gate.PROBLEM_MULTIPLE_SUBJECTS]
+    assert task.result.quality_gate["blocked"] is False
     assert judge.calls[0][1] == b"master-bytes", "判官要拿到母版才答得了'多出来的物体'"
 
 
 def test_gate_disabled_leaves_no_reading_and_costs_nothing(session_factory, monkeypatch):
     judge = _StubJudge(_verdict())
     task = _run_task(session_factory, judge, False, False, monkeypatch)
-    assert task.result.quality is None, "没判就该是 None,不能看起来像'判了没问题'"
+    assert task.result.quality_gate is None, "没判就该是 None,不能看起来像'判了没问题'"
     assert judge.calls == []
 
 

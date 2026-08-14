@@ -228,5 +228,7 @@ def _deserialize_result(
             action_type=raw.get("action_type", ""),
             frames=frames,
             quality=raw.get("quality"),
+            prompt_version=raw.get("prompt_version"),
+            quality_gate=raw.get("quality_gate"),
         )
     return None
