@@ -160,7 +160,11 @@ class LocalSpriteRenderProvider:
         directions: int = 4,
         frames: int = 12,
         size: tuple[int, int] = RENDER_SIZE,
-        material: str = "cel",
+        # 默认 lit 而不是 cel:cel 是零光照平涂,直接用贴图原色,灯光完全不参与 ——
+        # 深色衣物(斗篷、皮甲)因此糊成没有层次的一团。实测同一个深色斗篷角色,
+        # 侧面主体平均亮度 cel 14.5 / toon 10.7 / lit 25.8,只有 lit 能看出布料褶皱。
+        # cel 仍然保留:它完全确定性(灯位变化不改颜色),做像素风与对照实验时要用。
+        material: str = "lit",
     ) -> SpriteSheet:
         if directions not in (4, 8):
             raise ValueError(f"朝向数只支持 4 或 8(八向是四向的超集),收到 {directions}")

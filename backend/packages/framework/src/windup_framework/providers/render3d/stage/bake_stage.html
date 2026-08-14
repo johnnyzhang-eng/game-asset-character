@@ -53,10 +53,15 @@ document.body.appendChild(renderer.domElement);
 
 // cel 是零光照平涂(完全确定性,灯位变化不改颜色),不需要灯;其余需要。
 if (MAT !== 'cel') {
+  // 环境光是这组里最要紧的一盏:角色出的是**序列帧素材**,不是一张有戏剧感的插画。
+  // 深色衣物(斗篷、皮甲)在低环境光下会糊成一团黑,抠图之后连轮廓都分不出层次。
+  // 实测一个深色斗篷角色:环境光 0.35 时八个朝向的主体平均亮度只有 13.6~21.6(满值 255)。
   const lights = new THREE.Group();
-  lights.add(new THREE.DirectionalLight(0xfff4e0, 2.2).translateX(1.2).translateY(1.6).translateZ(1.0),
-             new THREE.DirectionalLight(0xc8dcff, 0.6).translateX(-1.3).translateY(0.4).translateZ(0.8),
-             new THREE.AmbientLight(0xffffff, 0.35));
+  lights.add(new THREE.DirectionalLight(0xfff4e0, 2.6).translateX(1.2).translateY(1.6).translateZ(1.0),
+             new THREE.DirectionalLight(0xc8dcff, 1.0).translateX(-1.3).translateY(0.4).translateZ(0.8),
+             // 底部补光:纯顶光会让脚部与下摆落进死黑,而那正是脚线对齐要用的部位。
+             new THREE.DirectionalLight(0xffffff, 0.5).translateX(0).translateY(-1.0).translateZ(0.6),
+             new THREE.AmbientLight(0xffffff, 1.1));
   scene.add(lights);
 }
 const root = new THREE.Group(); scene.add(root);
