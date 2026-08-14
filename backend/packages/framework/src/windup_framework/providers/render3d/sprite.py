@@ -1,16 +1,8 @@
 """``SpriteRenderProvider`` 的本地实现:绑骨模型 bytes → 各朝向序列帧 bytes。
 
-**这一段零 API 成本**,失败可以随便重试 —— 也正因为如此,它是整条链路上唯一能反复实验的
-一段,前面两段每跑一次都扣积分。
-
-多朝向是三渲二相对逐帧 / 视频路线的主要杠杆:模型与动作都不变,**只换相机方位角重渲一遍**,
-各朝向天生一致(同一网格、同一骨骼、同一采样时刻)。逐帧 / 视频路线做同样的事是 N 倍生成
-费用,而且各朝向之间没有一致性保证。
-
-实现形态:临时目录当 docroot(模型 + 出帧台页面 + 指向 three 的软链) → 起一个本地
-HTTP 服务 → node + playwright 驱动出帧台 → 读回 PNG bytes。
-**bytes 进 bytes 出**:落盘只是本实现内部的事,不外泄给调用方(与 uploader 那条约定同源 ——
-"该 provider 自己的适配问题")。
+临时目录当 docroot(模型 + 出帧台页面 + 指向 three 的软链) → 本地 HTTP 服务 →
+node + playwright 驱动出帧台 → 读回 PNG bytes。**这一段零 API 成本**,是整条链路上唯一能
+反复实验的一段。落盘只是本实现内部的事,不外泄给调用方。
 """
 from __future__ import annotations
 
@@ -39,18 +31,16 @@ __all__ = ["LocalSpriteRenderProvider", "DIRECTIONS_4", "DIRECTIONS_8", "MATERIA
 
 STAGE_DIR = pathlib.Path(__file__).resolve().parent / "stage"
 
-# 朝向名 → 相机方位角(度)。0° = 角色朝屏幕右(对齐 faces="right")。逆时针每 45° 一个,
-# 八向是四向的超集。键名与前端导出模型的 ``ExportAction.sequences[].direction`` 一致,
-# **不需要转换层**。
+# 朝向名 → 相机方位角(度)。0° = 角色朝屏幕右(对齐 faces="right"),逆时针每 45° 一个。
+# 键名与前端 ``ExportAction.sequences[].direction`` 一致,**不需要转换层**。
 DIRECTIONS_8 = {"e": 0, "ne": 45, "n": 90, "nw": 135, "w": 180, "sw": 225, "s": 270, "se": 315}
 DIRECTIONS_4 = {"e": 0, "n": 90, "w": 180, "s": 270}
 
 # 出帧台**真正认识**的材质取值,每个对应一个不同的渲染分支。
 #
-# 这张表存在的唯一理由是一个仪器陷阱:管线那份出帧台的材质分支只认三种取值,其余(包括
-# ``cel`` / ``studio``)静默落到同一个分支 —— 于是"拿两种材质做对照"实际上根本没换材质,
-# 得出的结论不作数。本 provider 因此**在边界上校验**,认不出的取值当场抛;出帧台内部也
-# 独立抛一次(双保险,免得有人绕过 provider 直接开页面)。
+# 这张表挡的是一个仪器陷阱:认不出的取值会静默落到同一个分支,于是"拿两种材质做对照"
+# 实际上根本没换材质,得出的结论不作数。provider 在边界上校验,出帧台内部再独立抛一次
+# (免得有人绕过 provider 直接开页面)。
 MATERIALS = ("cel", "lit", "clay", "toon", "orig")
 
 _EXT = {"GLB": "glb", "FBX": "fbx"}
@@ -65,11 +55,8 @@ def _free_port() -> int:
 def _is_dir(p: pathlib.Path) -> bool:
     """``p.is_dir()``,但把"问不出来"当成 False。
 
-    向上搜 node_modules 会一路走到 ``/``,而根下有些合成入口对 ``stat`` 直接报错而不是
-    返回"不存在":macOS 上 ``/.resolve/node_modules/three`` 抛 ``OSError(EINVAL)``,
-    于是整条发现逻辑连同**所有**依赖它的用例一起崩(本机实测 6 个用例红,与被测代码无关)。
-    找不到 three.js 是一种正常结果(调用方另有报错路径),搜索途中问不出来更是,
-    两者都不该表现成崩溃。
+    向上搜 node_modules 会一路走到 ``/``,而根下有些合成入口对 ``stat`` 直接报错而不是返回
+    "不存在"(macOS 的 ``/.resolve`` 抛 ``OSError(EINVAL)``)—— 那不该让整条发现逻辑崩掉。
     """
     try:
         return p.is_dir()
@@ -84,11 +71,8 @@ def _find_dir(candidates: list[pathlib.Path]) -> pathlib.Path | None:
 def _discover_three(levels: int = 6) -> pathlib.Path | None:
     """找一份 three.js。显式参数 > ``WINDUP_THREE_DIR`` > 从 cwd / 包目录向上搜 node_modules。
 
-    向上每一层还会看**该层的直接子目录**:这条线的出帧资产历史上住在某个子目录的
-    node_modules 里,不写死具体名字,只按 ``*/node_modules/three`` 这个通用形状找。
-    搜索深度封顶(``levels``),免得在深路径上把整棵树 iterdir 一遍。
-
-    产品仓里 three 是普通 npm 依赖,这个函数第一条就命中,后面几条都用不上。
+    每层还看直接子目录,因为 three 常装在某个子项目里 —— 按 ``*/node_modules/three`` 的形状
+    找而不写死名字。``levels`` 封顶是免得在深路径上把整棵树 iterdir 一遍。
     """
     env = os.environ.get("WINDUP_THREE_DIR")
     if env:
@@ -130,9 +114,8 @@ class _QuietHandler(http.server.SimpleHTTPRequestHandler):
 class LocalSpriteRenderProvider:
     """本地出帧 provider。
 
-    ``three_dir`` / ``playwright_module`` 留成构造参数是为了搬仓:产品仓里它们是普通的
-    npm 依赖,一行都不用传;在本仓靠 :func:`_discover_three` / :func:`_discover_playwright`
-    自动找。
+    ``three_dir`` / ``playwright_module`` 不传就靠 :func:`_discover_three` /
+    :func:`_discover_playwright` 自动找;留成构造参数是给"装在非常规位置"的部署用的。
     """
 
     def __init__(
@@ -229,8 +212,7 @@ class LocalSpriteRenderProvider:
         except subprocess.TimeoutExpired as exc:
             raise RenderStageError(f"出帧超时({self._timeout}s)") from exc
         if proc.returncode == 2:
-            # 空帧自检。**不让全透明帧冒充成功** —— 这一步在管线里是拿教训换来的:
-            # 三帧 alpha 全 0,外层照样打印"N 帧 时长…",没有任何告警。
+            # 不让全透明帧冒充成功:帧数与时长照样打得出来,空帧没有别的信号。
             raise RenderStageError(f"出帧台空帧自检不通过:\n{proc.stderr.strip()}")
         if proc.returncode != 0:
             raise RenderStageError(

@@ -1,18 +1,10 @@
-"""三渲二三段能力的 provider —— **产品侧 Protocol 形状**,为整体搬进产品仓准备。
+"""三渲二三段能力的 provider。
 
     母版图 bytes ──Model3DProvider──▶ 3D 模型 bytes ──AutoRigProvider──▶ 绑骨模型 bytes
                                                                             │
                                                         SpriteRenderProvider │
                                                                             ▼
                                                         各朝向序列帧 PNG bytes
-
-对应产品仓的落点(搬过去时是拆分而不是重写):
-
-    interfaces.py  →  framework/providers/interfaces.py   (三个 Protocol + ModelUploader port)
-    tencent.py     →  framework/providers/tencent3d.py    (两个计费实现 + COS uploader)
-    sprite.py      →  framework/providers/sprite3d.py     (本地出帧实现)
-    checks.py      →  ai_engine/model_check.py            (与 master_check 并列的入口预检)
-    _tc3.py        →  产品仓若已有腾讯云凭证层则整份替换
 
 **本包不 import 管线仓任何模块**,依赖只有标准库 + 出帧段的 node/three/playwright。
 """
