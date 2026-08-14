@@ -20,6 +20,7 @@ import {
   type ActionFirstFrameWorkflowNode,
   type ActionFullFrameWorkflowNode,
   type ActionGenerationMethodWorkflowNode,
+  type ActionPreset,
   type Character,
   type CharacterSetupWorkflowNode,
   type CharacterTemplateWorkflowNode,
@@ -37,11 +38,16 @@ import {
   ExportButton,
   type ExportPackageModel,
 } from '@/features/export-package'
-import { createDefaultRealWorkflowEditorSession, type WorkflowEditorSession } from './runtime'
+import {
+  createDefaultRealWorkflowEditorSession,
+  loadDefaultActionPresets,
+  type WorkflowEditorSession,
+} from './runtime'
 import './workflow-editor.css'
 
 export interface WorkflowEditorPageProps {
   loadSession?: (runId: string) => Promise<WorkflowEditorSession>
+  loadActionPresets?: (signal?: AbortSignal) => Promise<ActionPreset[]>
 }
 
 type WorkflowCardData = {
@@ -54,28 +60,14 @@ type WorkflowCardData = {
 type WorkflowCardNode = Node<WorkflowCardData, 'workflow-card'>
 type ActionMenuLevel = 'root' | 'outfits' | 'actions' | 'custom-action'
 
-/**
- * 菜单里的预设动作。label 只用于展示，name 是落进 WorkflowRun 的动作名——
- * 两者分开写，改菜单文案不会连带改掉已经落库的数据。
- */
-const ACTION_PRESETS = [
-  {
-    type: 'idle',
-    label: 'Idle 待机',
-    name: '待机',
-    prompt: '平稳呼吸，重心轻微起伏',
-  },
-  { type: 'walk', label: 'Walk 行走', name: '行走', prompt: '轻快地向前行走' },
-  {
-    type: 'attack',
-    label: 'Attack 攻击',
-    name: '攻击',
-    prompt: '蓄力后向前攻击并回到准备姿态',
-  },
-  { type: 'custom', label: '自定义动作', name: '', prompt: '' },
-] as const
-
 const ACTION_PRESET_HINT = '预设动作 · 逐帧生成'
+
+/**
+ * 自定义动作不在后端预设表里：它没有面向模型的文案可守（描述由用户当场写，走
+ * `build_custom_prompt` 那条已有门禁的分支），这里只是通往表单的入口。
+ */
+const CUSTOM_ACTION_LABEL = '自定义动作'
+const CUSTOM_ACTION_HINT = '自由描述 · 可选循环播放'
 
 /** 角色设定与身份母版为所有动作分支共用，归在这条虚拟分支下。 */
 const SHARED_BRANCH = 'shared'
@@ -142,7 +134,10 @@ const nodeTypes = { 'workflow-card': WorkflowCard }
  * 页面只订阅 Controller 的 WorkflowRun 并把它投影为画布；选择、菜单、位置和 busy
  * 都是临时 UI 状态，不会写出第二份流程状态机。
  */
-export function WorkflowEditorPage({ loadSession }: WorkflowEditorPageProps = {}) {
+export function WorkflowEditorPage({
+  loadSession,
+  loadActionPresets,
+}: WorkflowEditorPageProps = {}) {
   const { runId } = useParams<{ runId: string }>()
   const [session, setSession] = useState<WorkflowEditorSession | null>(null)
   const [character, setCharacter] = useState<Character | null>(null)
@@ -154,6 +149,11 @@ export function WorkflowEditorPage({ loadSession }: WorkflowEditorPageProps = {}
   const [selectedOutfitId, setSelectedOutfitId] = useState<string | null>(null)
   /** 正在执行命令的分支。必须是集合：并行分支各自持锁，后起的不能顶掉先起的。 */
   const [busyBranches, setBusyBranches] = useState<ReadonlySet<string>>(() => new Set())
+  /** 后端预设。null=还没拿到（加载中或失败），与"拿到了但是空表"必须分得开。 */
+  const [actionPresets, setActionPresets] = useState<ActionPreset[] | null>(null)
+  const [actionPresetError, setActionPresetError] = useState<string | null>(null)
+  /** 递增即重试；只用来把 effect 再跑一遍，值本身没有含义。 */
+  const [actionPresetAttempt, setActionPresetAttempt] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [resumeError, setResumeError] = useState<string | null>(null)
   const [generationReadError, setGenerationReadError] = useState<string | null>(null)
@@ -275,6 +275,25 @@ export function WorkflowEditorPage({ loadSession }: WorkflowEditorPageProps = {}
     }
   }, [loadSession, requestGenerations, runId])
 
+  useEffect(() => {
+    const abort = new AbortController()
+    const loader = loadActionPresets ?? loadDefaultActionPresets
+    setActionPresets(null)
+    setActionPresetError(null)
+    void loader(abort.signal)
+      .then((presets) => {
+        if (abort.signal.aborted) return
+        setActionPresets(presets)
+      })
+      .catch((cause: unknown) => {
+        if (abort.signal.aborted) return
+        // 只记错误，不落回本地副本：本地副本绕过后端的措辞门禁，且与后端漂移之后
+        // 界面上没有任何异常可看，用户是拿着过期文案去付费生成的。
+        setActionPresetError(errorMessage(cause, '读取动作预设失败'))
+      })
+    return () => abort.abort()
+  }, [actionPresetAttempt, loadActionPresets])
+
   const exportModels = useMemo(() => {
     const models = new Map<string, ExportPackageModel>()
     if (!character || !run || !session) return models
@@ -317,6 +336,9 @@ export function WorkflowEditorPage({ loadSession }: WorkflowEditorPageProps = {}
             actionMenuOpen,
             actionMenuLevel,
             selectedOutfitId,
+            actionPresets,
+            actionPresetError,
+            reloadActionPresets: () => setActionPresetAttempt((attempt) => attempt + 1),
             busyBranches,
             resumeBlocked: Boolean(resumeError),
             setSelectedImages,
@@ -330,6 +352,8 @@ export function WorkflowEditorPage({ loadSession }: WorkflowEditorPageProps = {}
     [
       actionMenuOpen,
       actionMenuLevel,
+      actionPresetError,
+      actionPresets,
       busyBranches,
       character,
       exportModels,
@@ -491,6 +515,10 @@ interface ProjectionInput {
   actionMenuOpen: boolean
   actionMenuLevel: ActionMenuLevel
   selectedOutfitId: string | null
+  /** null = 还没拿到；与 actionPresetError 一起决定菜单显示加载中还是失败。 */
+  actionPresets: ActionPreset[] | null
+  actionPresetError: string | null
+  reloadActionPresets(): void
   busyBranches: ReadonlySet<string>
   resumeBlocked: boolean
   setSelectedImages: React.Dispatch<React.SetStateAction<Record<string, string>>>
@@ -878,7 +906,61 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
       >
         ← 生成动作
       </button>
-      {ACTION_PRESETS.map((preset) => (
+      <ActionPresetItems
+        input={input}
+        templateNodeId={templateNodeId}
+        selectedOutfit={selectedOutfit}
+        branchBusy={branchBusy}
+      />
+      <button
+        type="button"
+        className={MENU_ITEM}
+        disabled={!selectedOutfit || branchBusy}
+        onClick={() => {
+          if (!selectedOutfit) return
+          input.setActionMenuLevel('custom-action')
+        }}
+      >
+        <b className={MENU_ITEM_TITLE}>{CUSTOM_ACTION_LABEL}</b>
+        <small className={MENU_ITEM_HINT}>{CUSTOM_ACTION_HINT}</small>
+      </button>
+    </div>
+  )
+}
+
+/** 预设条目全部来自后端；取不到就摆明说取不到并给重试，不落回本地副本。 */
+function ActionPresetItems({
+  input,
+  templateNodeId,
+  selectedOutfit,
+  branchBusy,
+}: {
+  input: ProjectionInput
+  templateNodeId: string
+  selectedOutfit: Character['outfits'][number] | null
+  branchBusy: boolean
+}) {
+  if (input.actionPresetError) {
+    return (
+      <button type="button" className={MENU_ITEM} onClick={input.reloadActionPresets}>
+        <b className={MENU_ITEM_TITLE}>重试读取动作预设</b>
+        <small className={MENU_ITEM_HINT}>{input.actionPresetError}</small>
+      </button>
+    )
+  }
+
+  if (!input.actionPresets) {
+    return (
+      <button type="button" className={MENU_ITEM} disabled>
+        <b className={MENU_ITEM_TITLE}>正在读取动作预设</b>
+        <small className={MENU_ITEM_HINT}>{ACTION_PRESET_HINT}</small>
+      </button>
+    )
+  }
+
+  return (
+    <div className="contents">
+      {input.actionPresets.map((preset) => (
         <button
           type="button"
           key={preset.type}
@@ -886,10 +968,6 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
           disabled={!selectedOutfit || branchBusy}
           onClick={() => {
             if (!selectedOutfit) return
-            if (preset.type === 'custom') {
-              input.setActionMenuLevel('custom-action')
-              return
-            }
             input.runCommand(SHARED_BRANCH, () =>
               input.controller.addAction({
                 dependsOnNodeIds: [templateNodeId],
@@ -897,7 +975,7 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
                   outfitId: selectedOutfit.id,
                   name: preset.name,
                   type: preset.type,
-                  prompt: preset.prompt,
+                  prompt: preset.description,
                   fps: 12,
                 },
               }),
@@ -908,9 +986,7 @@ function ActionMenu({ input, templateNodeId }: { input: ProjectionInput; templat
           }}
         >
           <b className={MENU_ITEM_TITLE}>{preset.label}</b>
-          <small className={MENU_ITEM_HINT}>
-            {preset.type === 'custom' ? '自由描述 · 可选循环播放' : ACTION_PRESET_HINT}
-          </small>
+          <small className={MENU_ITEM_HINT}>{ACTION_PRESET_HINT}</small>
         </button>
       ))}
     </div>
@@ -958,7 +1034,9 @@ function CustomActionForm({
             disabled={branchBusy}
             onChange={(event) => setLoop(event.target.checked)}
           />
-          <span>循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾</span>
+          <span>
+            循环播放——走路、待机这类能无缝反复播的动作勾选；攻击、跳跃这类只做一次的不要勾
+          </span>
         </label>
         <button
           type="button"

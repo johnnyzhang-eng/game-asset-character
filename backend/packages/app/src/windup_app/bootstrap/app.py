@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from windup_framework.db import Base, engine
 
 # 模型导入：触发 Base.metadata 注册，确保 create_all 能发现所有表
+from windup_app.server.action_preset import ACTION_PRESETS
 from windup_app.server.character.model import Character  # noqa: F401
 from windup_app.server.orchestrator.dispatcher import GenerationDispatcher
 from windup_app.server.project.model import Project  # noqa: F401
@@ -22,6 +23,7 @@ from windup_app.server.quota.model import CreditAccount, CreditTransaction  # no
 # InviteCode, InviteRecord, TokenUsage 暂不实现
 from windup_app.server.user.model import User  # noqa: F401
 from windup_app.server.workflow_run.model import WorkflowRun  # noqa: F401
+from windup_app.web.api.action_preset import router as action_preset_router
 from windup_app.web.api.auth import router as auth_router
 from windup_app.web.api.character import router as character_router
 from windup_app.server.orchestrator import task_repo
@@ -106,11 +108,14 @@ def create_app() -> FastAPI:
     app.include_router(media_router)
     app.include_router(generation_router)
     app.include_router(quota_router)
+    app.include_router(action_preset_router)
     # 生成任务的后台执行器挂到 app.state:端点只建 PENDING 记录立即返回,真正的
     # 图生图/i2v 在后台线程跑。放在 state 而不是 import 到 web 层,是因为
     # import-linter 的分层契约禁止 app.web 直连 ai_engine,而 executor 要调它。
     app.state.run_action_task = run_action_task
     app.state.run_image_task = run_image_task
+    # 动作预设同理:文案住在 ai_engine 的提示词包里(归措辞门禁管),web 层够不着。
+    app.state.action_presets = ACTION_PRESETS
 
     # task_repo 状态变更时自动推 SSE。延迟 import 避免与 generation 模块循环依赖。
     from windup_app.web.api.generation import event_bus

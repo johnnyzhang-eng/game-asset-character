@@ -610,7 +610,11 @@ function QuickStartRun({
     setError(null)
     try {
       if (!session) return
-      const updated = await session.confirmCandidate(selectedCandidate, actionDescription, actionLoop)
+      const updated = await session.confirmCandidate(
+        selectedCandidate,
+        actionDescription,
+        actionLoop,
+      )
       setRun(updated)
       setSelectedCandidate(null)
       setActionDescription('')

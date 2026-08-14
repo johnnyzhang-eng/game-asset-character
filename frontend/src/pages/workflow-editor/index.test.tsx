@@ -18,8 +18,9 @@ import { createWorkflowController, type WorkflowController } from '@/features/wo
 import { WorkflowEditorPage } from './index'
 import type { WorkflowEditorSession } from './runtime'
 
-const { defaultSessionLoader, flowProps, fitView } = vi.hoisted(() => ({
+const { defaultSessionLoader, defaultPresetLoader, flowProps, fitView } = vi.hoisted(() => ({
   defaultSessionLoader: vi.fn(),
+  defaultPresetLoader: vi.fn(),
   flowProps: { current: null as Record<string, unknown> | null },
   fitView: vi.fn(),
 }))
@@ -29,6 +30,7 @@ vi.mock('./runtime', async (importOriginal) => {
   return {
     ...actual,
     createDefaultRealWorkflowEditorSession: defaultSessionLoader,
+    loadDefaultActionPresets: defaultPresetLoader,
   }
 })
 
@@ -68,8 +70,19 @@ interface TestFlowProps extends Record<string, unknown> {
   children?: ReactNode
 }
 
+/** 后端 /action-presets 的返回。刻意与生产文案不同字，好让"渲染的是接口数据"可证。 */
+function actionPresetsFixture() {
+  return [
+    { type: 'idle', label: 'Idle 待机', name: '待机', description: '呼吸带动胸腔起伏' },
+    { type: 'walk', label: 'Walk 行走', name: '行走', description: '轻快地向前行走' },
+    { type: 'attack', label: 'Attack 攻击', name: '攻击', description: '直刺发力前的蓄势瞬间' },
+  ]
+}
+
 beforeEach(() => {
   defaultSessionLoader.mockReset()
+  defaultPresetLoader.mockReset()
+  defaultPresetLoader.mockResolvedValue(actionPresetsFixture())
   fitView.mockClear()
   flowProps.current = null
   window.history.replaceState({}, '', '/')
@@ -353,6 +366,89 @@ describe('WorkflowEditorPage real runtime boundary', () => {
     )
   })
 
+  it('预设菜单渲染接口返回的那一份，落库的 prompt 也来自接口', async () => {
+    // 这份与生产文案毫无重合。渲染和落库都必须跟着它走——跟着任何本地常量走，
+    // 前端就又有了一份绕开后端措辞门禁的副本。
+    defaultPresetLoader.mockResolvedValue([
+      { type: 'idle', label: '接口给的待机', name: '接口待机', description: '接口给的待机描述' },
+    ])
+    const session = createSession(completedTemplateWorkflow('42'), {
+      character: characterFixture(),
+    })
+    defaultSessionLoader.mockResolvedValue(session)
+    renderEditor('/workflow-editor/42')
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加动作分支' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成动作 ›' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择造型 夜行装' }))
+
+    expect(screen.queryByRole('button', { name: /Walk 行走/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /Attack 攻击/ })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /接口给的待机/ }))
+
+    await waitFor(() =>
+      expect(session.controller.getWorkflow().nodes).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'action-first-frame',
+            input: expect.objectContaining({
+              type: 'idle',
+              name: '接口待机',
+              prompt: '接口给的待机描述',
+            }),
+          }),
+        ]),
+      ),
+    )
+  })
+
+  it('预设还没到时菜单只显示读取中，不显示任何预设动作', async () => {
+    const pending = deferred<unknown>()
+    defaultPresetLoader.mockReturnValue(pending.promise)
+    defaultSessionLoader.mockResolvedValue(
+      createSession(completedTemplateWorkflow('42'), { character: characterFixture() }),
+    )
+    renderEditor('/workflow-editor/42')
+
+    fireEvent.click(await screen.findByRole('button', { name: '添加动作分支' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成动作 ›' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择造型 夜行装' }))
+
+    expect(screen.getByRole('button', { name: /正在读取动作预设/ })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /Attack 攻击/ })).toBeNull()
+    // 自定义动作不依赖预设接口，它那条入口照常可用。
+    expect(screen.getByRole('button', { name: /^自定义动作/u })).toBeTruthy()
+
+    await act(async () => {
+      pending.resolve(actionPresetsFixture())
+      await pending.promise
+    })
+    expect(screen.getByRole('button', { name: /Attack 攻击/ })).toBeTruthy()
+  })
+
+  it('预设读取失败时画布照常可用，菜单给重试而不是退回本地副本', async () => {
+    defaultPresetLoader.mockRejectedValueOnce(new Error('动作预设服务不可用'))
+    defaultSessionLoader.mockResolvedValue(
+      createSession(completedTemplateWorkflow('42'), { character: characterFixture() }),
+    )
+    renderEditor('/workflow-editor/42')
+
+    // 画布没有被错误页顶掉：预设是菜单的依赖，不是 WorkflowRun 的。
+    expect(await screen.findByLabelText('当前项目')).toBeTruthy()
+    fireEvent.click(await screen.findByRole('button', { name: '添加动作分支' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成动作 ›' }))
+    fireEvent.click(screen.getByRole('button', { name: '选择造型 夜行装' }))
+
+    const retry = await screen.findByRole('button', { name: /重试读取动作预设/ })
+    expect(screen.queryByRole('button', { name: /Attack 攻击/ })).toBeNull()
+
+    defaultPresetLoader.mockResolvedValue(actionPresetsFixture())
+    await act(async () => {
+      fireEvent.click(retry)
+    })
+    expect(await screen.findByRole('button', { name: /Attack 攻击/ })).toBeTruthy()
+  })
+
   it('自定义动作表单勾选循环播放后，落库的首帧输入带 loop: true', async () => {
     const session = createSession(completedTemplateWorkflow('42'), {
       character: characterFixture(),
@@ -512,9 +608,9 @@ describe('WorkflowEditorPage real runtime boundary', () => {
     expect(screen.getByText(/暂无绑骨 3D 模型/)).toBeTruthy()
 
     fireEvent.click(render3dButton)
-    expect(
-      workflow.nodes.find((node) => node.type === 'action-generation-method'),
-    ).toMatchObject({ method: null })
+    expect(workflow.nodes.find((node) => node.type === 'action-generation-method')).toMatchObject({
+      method: null,
+    })
   })
 
   it('该造型已有 3D 资产时可以选择三渲二并据此提交完整动画', async () => {

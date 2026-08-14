@@ -1,4 +1,5 @@
 import type {
+  ActionPreset,
   Character,
   CharacterApis,
   GenerationApis,
@@ -11,6 +12,7 @@ import type {
   WorkflowRunApis,
 } from '@/entities'
 import {
+  actionPresetApis,
   characterApis,
   createAuthenticatedGenerationApis,
   createMediaApis,
@@ -169,6 +171,14 @@ export async function createRealWorkflowEditorSession(
       controller.dispose()
     },
   }
+}
+
+/**
+ * 动作预设与 WorkflowRun 分开加载：预设是全局静态文案，取不到只该让动作菜单不可用，
+ * 不该连带把整张画布挡在错误页后面。
+ */
+export function loadDefaultActionPresets(signal?: AbortSignal): Promise<ActionPreset[]> {
+  return actionPresetApis.list(signal)
 }
 
 /** 使用生产 Generation 适配器恢复并推进单条 WorkflowRun。 */

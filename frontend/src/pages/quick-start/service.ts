@@ -465,7 +465,13 @@ export function createQuickStartService({
           const target = await persistCharacterTemplate(controller, selectedImageUrl)
           const spriteSize =
             knownSpriteSize ?? (await resolveProjectSpriteSize(controller.getWorkflow().projectId))
-          await prepareAction(controller, target.outfitId, actionDescription ?? '', spriteSize, loop)
+          await prepareAction(
+            controller,
+            target.outfitId,
+            actionDescription ?? '',
+            spriteSize,
+            loop,
+          )
           ensureAutomaticAdvance()
           return controller.getWorkflow()
         })().finally(() => {
