@@ -13,7 +13,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from windup_common.models import ActionSpec, CharacterCard
+from windup_common.models import ActionSpec, CharacterCard, Facing
+
+from windup_ai_engine.prompt.lint import Kind, LintIssue
 
 
 # ---- server 实现、注入给 ai_engine 的进度回调 port ----
@@ -52,6 +54,52 @@ class MasterRejected(ValueError):
         super().__init__(f"母版不可用({code.value}):{detail}")
         self.code = code
         self.detail = detail
+
+
+# ---- 用户大白话 → 正式提示词(实现在别处,见下)----
+@dataclass(frozen=True)
+class AdaptedPrompt:
+    """一次适配的结果。``rejected_reason`` 非空时 ``text`` 是空串,调用方不得往下送。"""
+
+    text: str
+    """正式提示词。
+
+    ``kind="i2v"`` 时它**不含**循环性尾句:循环与否是请求的属性(``ActionSpec.cyclic``),
+    适配器的入参里没有,替调用方猜一条会把一次性动作首尾闭环,而帧数 / 时长 / 成色全正常。
+    调用方按自己声明的循环性追加 ``prompt.custom`` 的两条尾句之一。
+    """
+
+    issues: tuple[LintIssue, ...] = ()
+    """适配过程中发现、但确定性改写做不到的问题。有 error 级则必然被拒。"""
+
+    rejected_reason: str | None = None
+    """不可适配的原因,**写给用户看**:讲清是哪条机制拦下的、该怎么改。
+
+    存在的理由是省钱:这些描述送进模型不会报错,只会拿回一段没法用的产物。
+    """
+
+
+class PromptAdapterPort(Protocol):
+    """把用户那句大白话改写进已验证的骨架。
+
+    引擎侧只定协议:确定性规则之外的改写要调模型,那属于 provider 那一层。
+
+    Args:
+        user_text: 用户自述的动作,只讲做什么动作。
+        kind: 目标模型类型 —— 决定哪些规则成立(见 ``prompt.lint`` 的 ``kind``)。
+        facing: 母版朝向。**必须与母版一致**。
+        stance: 角色体型(如 ``biped`` / ``quadruped``)。非双足时"手臂"一类词会让模型
+            凭空长出人的上肢,故它参与判定,不只是记录。
+    """
+
+    def adapt(
+        self,
+        user_text: str,
+        *,
+        kind: Kind,
+        facing: Facing,
+        stance: str,
+    ) -> AdaptedPrompt: ...
 
 
 # ---- ai_engine 出参(不含存储引用:上传 / 落库在 server 侧)----

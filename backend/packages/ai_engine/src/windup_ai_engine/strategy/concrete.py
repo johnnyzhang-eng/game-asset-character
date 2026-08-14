@@ -18,7 +18,7 @@ from windup_framework.providers import ImageProvider, MatteProvider, VideoProvid
 from windup_ai_engine._imgio import from_png as _img
 from windup_ai_engine._imgio import to_png as _png
 from windup_ai_engine.master_prep import prepare_master
-from windup_ai_engine.ports import ProgressPort
+from windup_ai_engine.ports import ProgressPort, PromptAdapterPort
 from windup_ai_engine.postprocess import master_pixel_spec, pixelate_frames
 from windup_ai_engine.slicing import extract_all_frames_bytes, pick_cycle, pick_oneshot
 from windup_ai_engine.prompt import (
@@ -28,7 +28,13 @@ from windup_ai_engine.prompt import (
     build_jump_prompt,
     build_walk_prompt,
 )
+from windup_ai_engine.prompt.adapter import RuleBasedPromptAdapter
+from windup_ai_engine.prompt.custom import CYCLIC_TAIL, ONESHOT_TAIL
 from windup_ai_engine.strategy.base import DerivationStrategy, is_cyclic
+
+# 引擎今天拿不到角色体型:CharacterCard 没有这个字段,而视频路线的身份全在母版里。
+# 双足是唯一有骨架的分支,故按双足送;要支持非双足,得先让体型随请求进到这一层。
+_ASSUMED_STANCE = "biped"
 
 
 class VideoFrameStrategy(DerivationStrategy):
@@ -41,21 +47,23 @@ class VideoFrameStrategy(DerivationStrategy):
 
     route = GenRoute.VIDEO_I2V
 
-    def __init__(self, video: VideoProvider, matte: MatteProvider) -> None:
+    def __init__(
+        self,
+        video: VideoProvider,
+        matte: MatteProvider,
+        adapter: PromptAdapterPort | None = None,
+    ) -> None:
         self._video = video
         self._matte = matte
+        self._adapter = RuleBasedPromptAdapter() if adapter is None else adapter
 
     def _build_prompt(self, action: ActionSpec) -> str:
         """按动作类型选提示词;朝向随 ActionSpec.facing。"""
-        # custom 单独一支:它的动作内容来自用户,只能由 build_custom_prompt 把那句话
-        # 嵌进机制骨架(朝向锁 / 正向措辞 / 装备存在无关 / 一次性的单次+终态保持)。
+        # custom 单独一支:它的动作内容来自用户,只能由骨架把那句话嵌进机制约束
+        # (朝向锁 / 正向措辞 / 装备存在无关 / 一次性的单次+终态保持)。
         # 不能塞进下面那张表 —— 那张表里的 builder 只接 facing。
         if action.action is ActionType.CUSTOM:
-            return build_custom_prompt(
-                action.custom_action or "",
-                facing=action.facing,
-                cyclic=bool(action.cyclic),
-            )
+            return self._custom_prompt(action)
         builders = {
             ActionType.JUMP: build_jump_prompt,
             ActionType.IDLE: build_idle_prompt,
@@ -63,6 +71,27 @@ class VideoFrameStrategy(DerivationStrategy):
         }
         build = builders.get(action.action, build_walk_prompt)
         return build(facing=action.facing)
+
+    def _custom_prompt(self, action: ActionSpec) -> str:
+        """用户那句话先过适配器,再按声明的循环性收尾。
+
+        Raises:
+            ValueError: 这段描述送进模型必然出坏产物(见 ``AdaptedPrompt.rejected_reason``)。
+        """
+        clause = action.custom_action or ""
+        cyclic = bool(action.cyclic)
+        try:
+            adapted = self._adapter.adapt(
+                clause, kind="i2v", facing=action.facing, stance=_ASSUMED_STANCE,
+            )
+        except Exception:
+            # 适配器坏掉只该丢掉那层改写,不该把整条生成打死:骨架本身不依赖它。
+            return build_custom_prompt(clause, facing=action.facing, cyclic=cyclic)
+        if adapted.rejected_reason:
+            # 与上面那条分得很清:这不是组件不可用,是这段描述本身跑不出可用产物,
+            # 而下一步就是付费调用 —— 回退等于照样把钱花掉换一段废视频。
+            raise ValueError(adapted.rejected_reason)
+        return f"{adapted.text} {CYCLIC_TAIL if cyclic else ONESHOT_TAIL}"
 
     def derive(
         self,
