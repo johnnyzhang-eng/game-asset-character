@@ -12,13 +12,20 @@ import io
 import pytest
 from PIL import Image
 
-from windup_ai_engine.ports import AdaptedPrompt
+from windup_ai_engine.ports import AdaptedPrompt, PromptRejectCode, PromptRejected
 from windup_ai_engine.prompt._md import load_doc
-from windup_ai_engine.prompt.adapter import RuleBasedPromptAdapter
+from windup_ai_engine.prompt.adapter import _STANCE_PARTS, RuleBasedPromptAdapter
 from windup_ai_engine.prompt.custom import CYCLIC_TAIL, MAX_ACTION_CHARS, ONESHOT_TAIL
 from windup_ai_engine.prompt.lint import lint
 from windup_ai_engine.strategy.concrete import VideoFrameStrategy
-from windup_common.models import ActionSpec, ActionType, CharacterCard, Facing, Stylize
+from windup_common.models import (
+    ActionSpec,
+    ActionType,
+    CharacterCard,
+    CharacterStance,
+    Facing,
+    Stylize,
+)
 
 # master_poses 是喂静态模型的母版姿态,其余四份是 i2v 正文 —— 规则的适用范围按机制分,
 # 用错 kind 会让 2a/2b 对静态图误报。
@@ -96,72 +103,94 @@ def test_upper_body_parts_do_not_count_as_a_body_anchor():
 # ── ③ 适配器:拒绝要讲机制,且发生在花钱之前 ──────────────────────────────
 
 
-def _adapt(text: str, *, kind: str = "i2v", facing: Facing = Facing.SIDE, stance: str = "biped"):
+def _adapt(
+    text: str,
+    *,
+    kind: str = "i2v",
+    facing: Facing = Facing.SIDE,
+    stance: CharacterStance = CharacterStance.BIPED,
+):
     return RuleBasedPromptAdapter().adapt(text, kind=kind, facing=facing, stance=stance)
 
 
-def test_subthreshold_request_is_rejected_with_its_mechanism():
-    got = _adapt("轻微抖动一下")
-    assert got.rejected_reason, "亚阈值微动被放行了"
-    assert "轻微" in got.rejected_reason
-    assert "抖" in got.rejected_reason, got.rejected_reason
-    assert got.text == "", "拒了还给文本,调用方会照样送出去"
+def _reject(text: str, **kw) -> PromptRejected:
+    with pytest.raises(PromptRejected) as e:
+        _adapt(text, **kw)
+    return e.value
 
 
-def test_multi_stage_description_is_rejected_for_stills():
-    """静态模型没有时间轴,多阶段描述会被摊成一张并排的分解姿势图。"""
-    got = _adapt("蓄力后攻击再收势", kind="still")
-    assert got.rejected_reason
-    assert "分解姿势" in got.rejected_reason
+# 每条拒绝理由 → 它的 code。server 据 code 选文案,所以"拒了"不够,拒对**哪一条**才算。
+_REJECTIONS = [
+    ("", "i2v", PromptRejectCode.EMPTY, "站着不动"),
+    ("x" * (MAX_ACTION_CHARS + 1), "i2v", PromptRejectCode.TOO_LONG, str(MAX_ACTION_CHARS)),
+    ("不要扬尘", "i2v", PromptRejectCode.NEGATION, "negative_prompt"),
+    ("kicks up dust", "i2v", PromptRejectCode.HAZARD_NOUN, "轮廓"),
+    ("swings with the broad side forward", "i2v", PromptRejectCode.SHAPE_PRIOR, "母版"),
+    ("轻微抖动一下", "i2v", PromptRejectCode.SUBTHRESHOLD, "抖"),
+    ("holds the sword steady at the shoulder", "i2v", PromptRejectCode.UNANCHORED_PROP, "漂"),
+    ("蓄力后攻击再收势", "still", PromptRejectCode.MULTI_STAGE, "分解姿势"),
+]
+
+
+@pytest.mark.parametrize(("text", "kind", "code", "mechanism"), _REJECTIONS)
+def test_each_rejection_carries_its_own_code_and_the_mechanism(text, kind, code, mechanism):
+    """拒绝理由必须讲机制:用户拿到"提示词不合规"改不动,拿到"否定词只会被 latch 进画面"才改得动。"""
+    rejected = _reject(text, kind=kind)
+    assert rejected.code is code
+    assert mechanism in rejected.detail, rejected.detail
+    assert len(rejected.detail) > 30, rejected.detail
+
+
+def test_every_reject_code_is_reachable():
+    """枚举值不许只存在于定义里 —— 没有拒绝路径能产出的 code 是死值,server 却要为它写文案。"""
+    covered = {c for _, _, c, _ in _REJECTIONS} | {PromptRejectCode.STANCE_MISMATCH}
+    assert covered == set(PromptRejectCode)
 
 
 def test_the_same_multi_stage_description_is_fine_for_video():
     """同一句话对 i2v 成立 —— 规则跟机制走,不跟文本走。"""
-    assert _adapt("蓄力后攻击再收势", kind="i2v").rejected_reason is None
+    assert _adapt("蓄力后攻击再收势", kind="i2v").text
 
 
-def test_unanchored_prop_request_is_rejected():
-    """i2v 强跟身体、弱跟持物;这条被删掉时,这个用例是第一个变红的。"""
-    got = _adapt("holds the sword steady at the shoulder")
-    assert got.rejected_reason
-    assert {i.category for i in got.issues} >= {"unanchored_prop"}
-
-
-def test_negation_and_hazard_nouns_are_both_reported():
-    """两条都命中时要把两条都讲出来,改完一条又被拦一次是最烦的。"""
-    got = _adapt("不要扬尘")
-    assert got.rejected_reason
-    assert {i.category for i in got.issues} == {"negation", "hazard_noun"}
-    assert "不要" in got.rejected_reason and "扬尘" in got.rejected_reason
+def test_both_mechanisms_are_listed_when_two_rules_fire():
+    """两条都命中时要把两条都讲出来,改完一条又被拦一次是最烦的;code 取报告序的第一条。"""
+    rejected = _reject("不要扬尘")
+    assert rejected.code is PromptRejectCode.NEGATION
+    assert "不要" in rejected.detail and "扬尘" in rejected.detail
 
 
 def test_impact_words_only_warn_and_still_produce_a_prompt():
     """冲击词是连带风险不是必然,拦下来的代价比放过去大。"""
     got = _adapt("slams the whole body onto the floor")
-    assert got.rejected_reason is None
     assert [i for i in got.issues if i.category == "impact_verb"]
 
 
-def test_non_biped_stance_rejects_human_limb_wording():
-    got = _adapt("raises the left arm high", stance="quadruped")
-    assert got.rejected_reason
-    assert "quadruped" in got.rejected_reason
+@pytest.mark.parametrize("stance", [s for s in CharacterStance if s is not CharacterStance.BIPED])
+def test_non_biped_stance_rejects_human_limb_wording(stance):
+    rejected = _reject("raises the left arm high", stance=stance)
+    assert rejected.code is PromptRejectCode.STANCE_MISMATCH
+    assert stance.value in rejected.detail
+    assert _STANCE_PARTS[stance] in rejected.detail, "拒了却没告诉他改成哪个部位"
+
+
+def test_every_non_biped_stance_brings_its_own_replacement_parts():
+    """加一个体型却不给替换部位,拒绝理由就退回"这个词不行"。"""
+    assert set(_STANCE_PARTS) == set(CharacterStance) - {CharacterStance.BIPED}
 
 
 def test_biped_stance_keeps_the_same_wording():
-    assert _adapt("raises the left arm high", stance="biped").rejected_reason is None
+    assert _adapt("raises the left arm high", stance=CharacterStance.BIPED).text
 
 
 @pytest.mark.parametrize("blank", ["", "   ", "\n"])
 def test_blank_text_is_rejected_instead_of_silently_producing_a_skeleton(blank):
     """空描述只会拿回一段站着不动的视频,而帧数和时长全对。"""
-    assert _adapt(blank).rejected_reason
+    assert _reject(blank).code is PromptRejectCode.EMPTY
 
 
-def test_overlong_text_is_rejected_through_the_same_channel():
-    """长度问题不能从异常走 —— 同一件事两条返回路径,调用方得写两套处理。"""
-    got = _adapt("x" * (MAX_ACTION_CHARS + 1))
-    assert got.rejected_reason and str(MAX_ACTION_CHARS) in got.rejected_reason
+def test_a_rejection_never_hands_back_a_prompt():
+    """拒绝走异常而不是返回值:漏读一个 rejected 字段是静默的,漏 catch 不是。"""
+    assert "rejected_reason" not in AdaptedPrompt.__dataclass_fields__
 
 
 # ── ④ 适配器的产物本身要过得了门禁 ───────────────────────────────────────
@@ -171,7 +200,6 @@ def test_overlong_text_is_rejected_through_the_same_channel():
 @pytest.mark.parametrize("kind", ["i2v", "still"])
 def test_adapted_output_carries_the_skeleton_and_passes_its_own_lint(facing, kind):
     got = _adapt("来回走动", kind=kind, facing=facing)
-    assert got.rejected_reason is None
     assert "来回走动" in got.text, "用户那句话没进提示词"
     assert "whatever the character already wears" in got.text     # 装备存在无关
     assert "One single character alone in the frame" in got.text  # 单主体 + 构图
@@ -266,10 +294,55 @@ def test_the_declared_loop_flag_still_picks_the_tail(monkeypatch):
 def test_a_rejected_description_never_reaches_the_paid_call(monkeypatch):
     """拒绝的全部价值在这一条:错在调用之前抛,而不是花完钱看画面。"""
     strat, video = _offline(monkeypatch)
-    with pytest.raises(ValueError, match="轻微"):
+    with pytest.raises(PromptRejected) as e:
         strat.derive(CharacterCard(name="t", desc="t"),
                      _spec("轻微抖动一下"), _png(), _NullProgress())
+    # 类型和 code 都要穿到管线外:server 靠它们判 4xx 与选文案,靠 parse 消息的话
+    # 改一次措辞就分支失效,而失效的表现是把用户的输入问题报成"系统出问题了"。
+    assert e.value.code is PromptRejectCode.SUBTHRESHOLD
     assert video.prompts == [], "拒了还是把请求发了出去"
+
+
+# ── ⑥ 体型从角色卡进到判定 ───────────────────────────────────────────────
+
+
+class _StanceSpy:
+    """记下真实收到的入参 —— 断言桩返回了什么证明不了管线传对了东西。"""
+
+    def __init__(self) -> None:
+        self.seen: list = []
+
+    def adapt(self, user_text, *, kind, facing, stance):
+        self.seen.append(stance)
+        return AdaptedPrompt(text="ZZREWRITTEN")
+
+
+@pytest.mark.parametrize("stance", list(CharacterStance))
+def test_the_card_stance_is_what_the_adapter_receives(monkeypatch, stance):
+    """写死 biped 时这条变红:非双足规则在真实管线里一次都不会生效。"""
+    spy = _StanceSpy()
+    strat, _ = _offline(monkeypatch, spy)
+    strat.derive(CharacterCard(name="t", desc="t", stance=stance),
+                 _spec("走两步"), _png(), _NullProgress())
+    assert spy.seen == [stance]
+
+
+def test_a_quadruped_card_rejects_human_limb_wording_end_to_end(monkeypatch):
+    """规则 5 在真实管线里生效的唯一证据:走 derive、用真适配器、不碰付费调用。"""
+    strat, video = _offline(monkeypatch)
+    card = CharacterCard(name="t", desc="t", stance=CharacterStance.QUADRUPED)
+    with pytest.raises(PromptRejected) as e:
+        strat.derive(card, _spec("raises the left arm high"), _png(), _NullProgress())
+    assert e.value.code is PromptRejectCode.STANCE_MISMATCH
+    assert video.prompts == []
+
+
+def test_the_same_wording_passes_for_the_default_biped_card(monkeypatch):
+    """反向:默认体型不拦人体部位词,否则占多数的人形角色被逼着写"前肢"。"""
+    strat, video = _offline(monkeypatch)
+    strat.derive(CharacterCard(name="t", desc="t"),
+                 _spec("raises the left arm high"), _png(), _NullProgress())
+    assert "raises the left arm high" in video.prompts[0]
 
 
 def test_a_broken_adapter_falls_back_to_the_existing_skeleton(monkeypatch):

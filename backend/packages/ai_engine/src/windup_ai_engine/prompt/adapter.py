@@ -14,11 +14,11 @@ framework 在 ai_engine 之下,framework 里的模块 import 不到本层的门�
 """
 from __future__ import annotations
 
-from windup_common.models import Facing
+from windup_common.models import CharacterStance, Facing
 
-from windup_ai_engine.ports import AdaptedPrompt
+from windup_ai_engine.ports import AdaptedPrompt, PromptRejectCode, PromptRejected
 from windup_ai_engine.prompt.custom import MAX_ACTION_CHARS, build_custom_body
-from windup_ai_engine.prompt.lint import Kind, LintIssue, lint
+from windup_ai_engine.prompt.lint import Kind, lint
 
 __all__ = ["RuleBasedPromptAdapter"]
 
@@ -37,9 +37,23 @@ _STAGE_MARKERS = (
     "然后", "接着", "紧接着", "之后", "再", "最后", "先", "收势",
 )
 _ARM_WORDS = ("arm", "arms", "elbow", "hand", "hands", "手臂", "胳膊", "手肘")
-# 空串 = 调用方没有体型信息。按双足处理并放行,不当成"未知就全拦" —— 那会把
-# 一条今天跑得通的产线拦死,而拦下来的绝大多数是双足角色。
-_BIPED = {"", "biped", "bipedal", "humanoid", "human", "双足", "人形"}
+
+# 每个非双足体型自带一套可替换的部位说法:拒绝理由要给得出改法,"这个词不行"给不了。
+# 缺一支就是拒了却说不出改哪儿,故 :class:`CharacterStance` 加成员必须同时加这里。
+_STANCE_PARTS = {
+    CharacterStance.QUADRUPED: "前肢 / 头颈 / 尾",
+    CharacterStance.SERPENTINE: "躯干起伏 / 尾 / 头颈",
+}
+
+# 门禁类别 → 拒绝码。直查不 get:漏配一条是引擎侧的装配缺口(该 5xx 让人介入),
+# 兜个通用码会把它伪装成用户的输入问题,而用户按那条文案改多少遍都过不了。
+_CODE_BY_CATEGORY = {
+    "negation": PromptRejectCode.NEGATION,
+    "hazard_noun": PromptRejectCode.HAZARD_NOUN,
+    "shape_prior": PromptRejectCode.SHAPE_PRIOR,
+    "subthreshold": PromptRejectCode.SUBTHRESHOLD,
+    "unanchored_prop": PromptRejectCode.UNANCHORED_PROP,
+}
 
 
 class RuleBasedPromptAdapter:
@@ -51,53 +65,55 @@ class RuleBasedPromptAdapter:
         *,
         kind: Kind = "i2v",
         facing: Facing = Facing.SIDE,
-        stance: str = "",
+        stance: CharacterStance | str = CharacterStance.BIPED,
     ) -> AdaptedPrompt:
+        """Raises ``PromptRejected``:这段描述送进模型必然出坏产物,理由带 code 与机制。"""
+        stance = CharacterStance(stance)      # 非法体型要炸,不静默按双足放行
         clause = (user_text or "").strip()
         if not clause:
-            return _rejected(
-                (),
+            raise PromptRejected(
+                PromptRejectCode.EMPTY,
                 "没写动作内容。空描述不会报错,只会拿回一段站着不动的视频,"
                 "而帧数和时长全对、看不出描述丢了。",
             )
 
-        # 长度在这里就答复,而不是让骨架里的 ValueError 冒出去:同一件事(用户的描述不行)
-        # 要么全走 rejected_reason,要么全走异常,两条路并存的话调用方得写两套处理。
         if len(clause) > MAX_ACTION_CHARS:
-            return _rejected(
-                (),
+            raise PromptRejected(
+                PromptRejectCode.TOO_LONG,
                 f"描述有 {len(clause)} 字,超过上限 {MAX_ACTION_CHARS}。描述越长越容易"
                 f"夹带角色外观,而外观由母版承载,写两遍会打架。只留动作本身。",
             )
 
         issues = lint(clause, kind=kind)
-        blockers = [i.message for i in issues if i.level == "error"]
+        blockers = [
+            (_CODE_BY_CATEGORY[i.category], i.message) for i in issues if i.level == "error"
+        ]
         low = clause.lower()
 
         if kind == "still":
             marker = next((m for m in _STAGE_MARKERS if m in low), None)
             if marker:
-                blockers.append(
+                blockers.append((
+                    PromptRejectCode.MULTI_STAGE,
                     f"「{marker}」把这段描述分成了好几个阶段,而静态模型没有时间轴:"
                     f"它会把各阶段并排画成一张分解姿势图,一张图里好几个身位。"
-                    f"只描述其中一个瞬间。"
-                )
+                    f"只描述其中一个瞬间。",
+                ))
 
-        if stance.strip().lower() not in _BIPED:
+        if stance is not CharacterStance.BIPED:
             hit = next((w for w in _ARM_WORDS if w in low), None)
             if hit:
-                blockers.append(
-                    f"这个角色的体型是 {stance},不是双足,而「{hit}」会让模型给它凭空"
-                    f"接上人的上肢。改写成发力的那个部位(前肢 / 尾 / 翼 / 触手)。"
-                )
+                blockers.append((
+                    PromptRejectCode.STANCE_MISMATCH,
+                    f"这个角色的体型是 {stance.value},不是双足,而「{hit}」会让模型给它凭空"
+                    f"接上人的上肢。改写成发力的那个部位({_STANCE_PARTS[stance]})。",
+                ))
 
         if blockers:
-            return _rejected(issues, "\n".join(f"· {b}" for b in blockers))
+            raise PromptRejected(
+                blockers[0][0], "\n".join(f"· {m}" for _, m in blockers)
+            )
 
         body = build_custom_body(clause, facing=facing)
         parts = [body, _SINGLE_INSTANT, _COMPOSITION] if kind == "still" else [body, _COMPOSITION]
         return AdaptedPrompt(text=" ".join(parts), issues=tuple(issues))
-
-
-def _rejected(issues: tuple[LintIssue, ...] | list[LintIssue], reason: str) -> AdaptedPrompt:
-    return AdaptedPrompt(text="", issues=tuple(issues), rejected_reason=reason)
