@@ -233,6 +233,7 @@ describe('WorkspacePage', () => {
     renderWorkspace()
 
     expect(screen.getByRole('heading', { name: '工作台' })).toBeTruthy()
+    expect(screen.getByText('从这里开始，去任何地方')).toBeTruthy()
     expect(screen.getByRole('link', { name: '进入快速开始' }).getAttribute('href')).toBe(
       '/quick-start',
     )
@@ -308,7 +309,7 @@ describe('WorkspacePage', () => {
     expect(
       (await screen.findByRole('link', { name: '预览 轻装信使 · 常态造型' })).getAttribute('href'),
     ).toBe('/playtest/51/outfit-default')
-    expect(screen.getByText('2 个动作 · 5 帧')).toBeTruthy()
+    expect(screen.getByText('3 个动作 · 5 帧')).toBeTruthy()
   })
 
   it('announces character loading for the selected project', async () => {

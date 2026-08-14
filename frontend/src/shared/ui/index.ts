@@ -1,3 +1,5 @@
+export { EditorialEntryCard } from './editorial-entry-card'
+export type { EditorialEntryArtwork, EditorialEntryCardProps } from './editorial-entry-card'
 export { KineticCopy } from './kinetic-copy'
 export type { KineticCopyPhase, KineticCopyProps } from './kinetic-copy'
 export { PageContainer } from './page-container'
