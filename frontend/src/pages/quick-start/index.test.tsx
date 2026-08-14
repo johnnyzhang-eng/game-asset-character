@@ -1,5 +1,5 @@
 import { StrictMode } from 'react'
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -8,7 +8,10 @@ import type { WorkflowRun } from '@/entities'
 import type { ExportPackageModel } from '@/features/export-package'
 import { QuickStartPage } from './index'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.useRealTimers()
+})
 
 function workflow(nodes: WorkflowRun['nodes'], id = 'run-1'): WorkflowRun {
   return { id, projectId: 'project-1', version: 1, storageStatus: 'active', nodes }
@@ -151,6 +154,111 @@ function renderAt(path: string, service: QuickStartEntryService) {
 }
 
 describe('QuickStartPage', () => {
+  it('reserves the fixed app header height before the creation entry', () => {
+    const entry = renderAt('/quick-start', serviceFor(null))
+    const entrySection = entry.getByLabelText('创作指令').closest('section')
+
+    expect(entrySection?.className).toContain('min-h-[100dvh]')
+    expect(entrySection?.className).toContain('pt-14')
+  })
+
+  it('uses a centered creation desk with style prompts before the composer', () => {
+    const entry = renderAt('/quick-start', serviceFor(null))
+    const entrySection = entry.getByLabelText('创作指令').closest('section')
+    const entryLayout = entrySection?.querySelector('[data-layout="quick-start-entry"]')
+    const composer = entrySection?.querySelector('[data-layout="quick-start-composer"]')
+    const starters = entrySection?.querySelector('[data-layout="quick-start-starters"]')
+
+    expect(entryLayout?.className).toContain('min-h-[calc(100dvh-3.5rem)]')
+    expect(entryLayout?.className).toContain('grid-rows-[1fr_auto]')
+    expect(composer?.className).toContain('max-w-3xl')
+    expect(composer?.querySelector('form')).toBeTruthy()
+    expect(composer?.querySelector('form')?.className).toContain('sm:grid-cols-[1fr_auto_auto]')
+    expect(starters).toBeTruthy()
+    expect(
+      Boolean(
+        starters &&
+        composer &&
+        starters.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ),
+    ).toBe(true)
+  })
+
+  it('removes non-actionable explanatory copy from the creation workspace', () => {
+    renderAt('/quick-start', serviceFor(null))
+
+    expect(screen.queryByText('QUICK START / CREATE CHARACTER')).toBeNull()
+    expect(screen.queryByText(/用一句角色设定/u)).toBeNull()
+    expect(screen.queryByText('AI 快捷创作')).toBeNull()
+    expect(screen.queryByText('文字创建')).toBeNull()
+    expect(screen.queryByText('角色图生成后仍需人工选择候选')).toBeNull()
+  })
+
+  it('cycles from the opening question into character-only role ideas', () => {
+    vi.useFakeTimers()
+    const entry = renderAt('/quick-start', serviceFor(null))
+    const heading = screen.getByRole('heading', { name: '想做一个什么角色？' })
+    const cycle = () => entry.container.querySelector<HTMLElement>('[data-copy-phase]')
+
+    expect(heading.textContent).toBe('想做一个什么角色？')
+
+    act(() => vi.advanceTimersByTime(2_399))
+    expect(heading.textContent).toBe('想做一个什么角色？')
+
+    act(() => vi.advanceTimersByTime(1))
+    expect(cycle()?.dataset.copyPhase).toBe('exiting')
+
+    act(() => vi.advanceTimersByTime(460))
+    expect(cycle()?.dataset.copyPhase).toBe('entering')
+    expect(heading.textContent).toBe('试试银色卷发、戴星形单片眼镜的裁缝')
+
+    act(() => vi.advanceTimersByTime(4_200 * 8))
+    expect(heading.textContent).toBe('试试银色卷发、戴星形单片眼镜的裁缝')
+    expect(heading.textContent).not.toContain('想做一个什么角色？')
+  })
+
+  it('animates back to the persistent default heading while the user writes', () => {
+    vi.useFakeTimers()
+    const entry = renderAt('/quick-start', serviceFor(null))
+    const heading = screen.getByRole('heading', { name: '想做一个什么角色？' })
+    const cycle = () => entry.container.querySelector<HTMLElement>('[data-copy-phase]')
+
+    act(() => vi.advanceTimersByTime(3_400))
+    expect(heading.textContent).toContain('银色卷发、戴星形单片眼镜的裁缝')
+
+    fireEvent.change(screen.getByRole('textbox', { name: '创作指令' }), {
+      target: { value: '戴银色面具的游侠' },
+    })
+    expect(cycle()?.dataset.copyMotionMode).toBe('characters')
+    expect(cycle()?.dataset.copyPhase).toBe('exiting')
+
+    act(() => vi.advanceTimersByTime(460))
+    expect(cycle()?.dataset.copyPhase).toBe('entering')
+    expect(heading.textContent).toBe('用文字塑造你的角色……')
+
+    act(() => vi.advanceTimersByTime(10_000))
+    expect(heading.textContent).toBe('用文字塑造你的角色……')
+  })
+
+  it('keeps style prompt space stable while dissolving the cards once creation begins', () => {
+    const entry = renderAt('/quick-start', serviceFor(null))
+    const entrySection = entry.getByLabelText('创作指令').closest('section')
+    const starters = entrySection?.querySelector('[data-layout="quick-start-starters"]')
+
+    expect(starters?.querySelectorAll('img')).toHaveLength(0)
+    expect(screen.getByRole('button', { name: /16-bit 日式 RPG/u })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /暗黑哥特像素/u })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /温暖手绘像素/u })).toBeTruthy()
+
+    fireEvent.change(screen.getByRole('textbox', { name: '创作指令' }), {
+      target: { value: '戴银色面具的游侠' },
+    })
+    expect(entrySection?.querySelector('[data-layout="quick-start-starters"]')).toBe(starters)
+    expect(starters?.getAttribute('data-presence')).toBe('hidden')
+    expect(starters?.getAttribute('aria-hidden')).toBe('true')
+    expect(screen.queryByRole('button', { name: /暗黑哥特像素/u })).toBeNull()
+  })
+
   it('按当前 Run 完成度显示统一导出入口', async () => {
     const run = workflow(setupAndTemplate({ selectedImageUrl: '/master.png' }))
     const model: ExportPackageModel = {
@@ -173,9 +281,9 @@ describe('QuickStartPage', () => {
 
   it('keeps the entry and run canvases at least viewport height', async () => {
     const entry = renderAt('/quick-start', serviceFor(null))
-    expect(
-      entry.getByRole('heading', { name: /用一句角色设定/u }).closest('section')?.className,
-    ).toContain('min-h-screen')
+    expect(entry.getByLabelText('创作指令').closest('section')?.className).toContain(
+      'min-h-[100dvh]',
+    )
 
     entry.unmount()
     const run = workflow(setupAndTemplate())
@@ -192,11 +300,12 @@ describe('QuickStartPage', () => {
       </MemoryRouter>,
     )
 
-    expect(screen.getByRole('heading', { name: /用一句角色设定/u })).toBeTruthy()
-    fireEvent.click(screen.getByRole('button', { name: /像素守夜人/u }))
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toContain('像素守夜人')
-    fireEvent.click(screen.getByRole('button', { name: '轻装信使' }))
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toContain('轻装信使')
+    expect(screen.getByRole('textbox', { name: '创作指令' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /16-bit 日式 RPG/u }))
+    expect((screen.getByRole('textbox') as HTMLInputElement).value).toBe(
+      '16-bit 日式 RPG 像素风，清晰轮廓，明亮配色',
+    )
+    expect(screen.queryByRole('button', { name: /暗黑哥特像素/u })).toBeNull()
   })
 
   it('shows first-frame confirmation instead of stale character candidates after a template is confirmed', async () => {
@@ -223,27 +332,50 @@ describe('QuickStartPage', () => {
     const service = serviceFor(null)
     const view = renderAt('/quick-start', service)
 
-    fireEvent.click(screen.getByRole('button', { name: /像素守夜人/u }))
-    fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+    fireEvent.click(screen.getByRole('button', { name: /16-bit 日式 RPG/u }))
+    fireEvent.click(screen.getByRole('button', { name: '生成角色' }))
     await waitFor(() =>
-      expect(service.start).toHaveBeenCalledWith(expect.stringContaining('像素守夜人')),
+      expect(service.start).toHaveBeenCalledWith('16-bit 日式 RPG 像素风，清晰轮廓，明亮配色'),
     )
     expect(service.open).not.toHaveBeenCalled()
 
     view.unmount()
     renderAt('/quick-start', service)
     const file = new File(['pixels'], 'hero.png', { type: 'image/png' })
-    fireEvent.click(screen.getByRole('button', { name: '上传角色母版' }))
+    fireEvent.click(screen.getByRole('button', { name: '添加母版' }))
     fireEvent.change(screen.getByLabelText('上传角色母版'), { target: { files: [file] } })
     expect(screen.getByText('hero.png')).toBeTruthy()
     fireEvent.change(screen.getByLabelText('创作指令'), { target: { value: '挥手' } })
-    fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成角色' }))
     await waitFor(() =>
       expect(service.startWithUploadedTemplate).toHaveBeenCalledWith(
         file,
         '挥手',
         expect.any(AbortSignal),
         false,
+      ),
+    )
+  })
+
+  it('offers the loop toggle beside the composer once an uploaded template gets a custom action', async () => {
+    const service = serviceFor(null)
+    renderAt('/quick-start', service)
+    const file = new File(['pixels'], 'hero.png', { type: 'image/png' })
+
+    fireEvent.change(screen.getByLabelText('创作指令'), { target: { value: '来回走动' } })
+    expect(screen.queryByText(/循环播放/u)).toBeNull()
+
+    fireEvent.change(screen.getByLabelText('上传角色母版'), { target: { files: [file] } })
+    const loopCheckbox = await screen.findByRole('checkbox')
+    fireEvent.click(loopCheckbox)
+    fireEvent.click(screen.getByRole('button', { name: '生成角色' }))
+
+    await waitFor(() =>
+      expect(service.startWithUploadedTemplate).toHaveBeenCalledWith(
+        file,
+        '来回走动',
+        expect.any(AbortSignal),
+        true,
       ),
     )
   })
@@ -262,7 +394,7 @@ describe('QuickStartPage', () => {
     )
 
     fireEvent.change(screen.getByLabelText('创作指令'), { target: { value: '像素骑士' } })
-    fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成角色' }))
 
     await waitFor(() => expect(service.resume).toHaveBeenCalled())
     expect(service.open).not.toHaveBeenCalled()
@@ -279,8 +411,20 @@ describe('QuickStartPage', () => {
     fireEvent.click(screen.getByRole('button', { name: '移除图片' }))
     expect(screen.queryByText('hero.png')).toBeNull()
     fireEvent.change(screen.getByLabelText('创作指令'), { target: { value: '骑士' } })
-    fireEvent.click(screen.getByRole('button', { name: '开始生成' }))
+    fireEvent.click(screen.getByRole('button', { name: '生成角色' }))
     expect((await screen.findByRole('alert')).textContent).toContain('服务繁忙')
+  })
+
+  it('keeps the uploaded template controls in the single-line composer', () => {
+    renderAt('/quick-start', serviceFor(null))
+    const file = new File(['pixels'], 'hero.png', { type: 'image/png' })
+
+    fireEvent.change(screen.getByLabelText('上传角色母版'), { target: { files: [file] } })
+
+    const composer = screen.getByLabelText('创作指令').closest('form')
+    expect(composer?.textContent).toContain('hero.png')
+    expect(screen.getByRole('button', { name: '移除图片' }).closest('form')).toBe(composer)
+    expect(composer?.querySelector('[data-layout="quick-start-attachment-row"]')).toBeNull()
   })
 
   it('adds an action to an existing character and reports submission errors', async () => {
@@ -357,7 +501,7 @@ describe('QuickStartPage', () => {
     renderAt('/quick-start/missing', service)
     expect(await screen.findByRole('heading', { name: '无法恢复这次创作' })).toBeTruthy()
     fireEvent.click(screen.getByRole('button', { name: '返回快速开始' }))
-    expect(screen.getByRole('heading', { name: /用一句角色设定/u })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '创作指令' })).toBeTruthy()
   })
 
   it('opens a recoverable run once and accepts its session update', async () => {
@@ -397,7 +541,7 @@ describe('QuickStartPage', () => {
     await waitFor(() => expect(service.start).toHaveBeenCalledWith('像素骑士'))
     expect((await screen.findByRole('alert')).textContent).toContain('重新生成失败')
     fireEvent.click(screen.getByRole('button', { name: '新建一次创作' }))
-    expect(screen.getByRole('heading', { name: /用一句角色设定/u })).toBeTruthy()
+    expect(screen.getByRole('textbox', { name: '创作指令' })).toBeTruthy()
   })
 
   it('confirms a generated first frame before starting the full animation', async () => {

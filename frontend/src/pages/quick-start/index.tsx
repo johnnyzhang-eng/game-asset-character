@@ -7,6 +7,7 @@ import {
   type ChangeEvent,
   type FormEvent,
 } from 'react'
+import { ArrowUp, ImageSquare, X } from '@phosphor-icons/react'
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router'
 
 import {
@@ -17,6 +18,7 @@ import {
   type WorkflowNodeType,
 } from '@/entities'
 import { ExportButton, type ExportPackageModel } from '@/features/export-package'
+import { KineticCopyCycle, type KineticCopyMessage } from '@/shared/ui'
 import {
   isCustomActionDescription,
   quickStartService,
@@ -41,16 +43,49 @@ const STEP_LABELS: Record<WorkflowNodeType, string> = {
   review: '审核',
 }
 
-const EXAMPLES = [
+const STYLE_PROMPTS = [
   {
-    label: '像素守夜人',
-    prompt: '一位提着风灯、披深色斗篷的像素守夜人',
+    title: '16-bit 日式 RPG',
+    detail: '清晰轮廓 · 明亮配色',
+    prompt: '16-bit 日式 RPG 像素风，清晰轮廓，明亮配色',
   },
   {
-    label: '轻装信使',
-    prompt: '轻装信使，侧视像素风，轮廓清晰，动作轻快',
+    title: '暗黑哥特像素',
+    detail: '低饱和 · 强烈明暗',
+    prompt: '暗黑哥特像素风，低饱和配色，强烈明暗对比',
+  },
+  {
+    title: '温暖手绘像素',
+    detail: '柔和色彩 · 纸张质感',
+    prompt: '温暖手绘像素风，柔和配色，细腻纸张质感',
   },
 ] as const
+
+const ROLE_IDEAS = [
+  '银色卷发、戴星形单片眼镜的裁缝',
+  '长着鹿角、披苔藓斗篷的邮差',
+  '戴透明水母帽、穿蓝色雨衣的药剂师',
+  '蓬松白胡子、背黄铜工具箱的机械师',
+  '紫色短发、戴猫耳耳机的情报员',
+  '披白羽斗篷、戴月牙面具的占星师',
+  '红色双辫、穿宽大飞行夹克的小飞行员',
+  '黑色卷发、戴珊瑚项链的海洋祭司',
+] as const
+
+const ROLE_IDEA_MESSAGES: readonly KineticCopyMessage[] = [
+  { lines: ['想做一个什么角色？'], className: 'text-app-ink' },
+  ...ROLE_IDEAS.map((idea) => ({
+    prefix: '试试',
+    prefixClassName:
+      'mr-3 font-mono text-[10px] font-bold tracking-[0.14em] text-app-faint sm:text-[11px]',
+    lines: [idea],
+    className: 'text-app-accent',
+  })),
+]
+
+const ROLE_DEFAULT_MESSAGE: readonly KineticCopyMessage[] = [
+  { lines: ['用文字塑造你的角色……'], className: 'text-app-ink' },
+]
 
 function playtestPath(characterId: string, outfitId: string, actionId?: string): string {
   const path = `/playtest/${encodeURIComponent(characterId)}/${encodeURIComponent(outfitId)}`
@@ -206,6 +241,8 @@ function QuickStartInput({
   const fileInput = useRef<HTMLInputElement>(null)
   const submitAbortController = useRef<AbortController | null>(null)
   const unavailableReason = service.unavailableReason
+  const hasPrompt = Boolean(prompt.trim())
+  const showStylePrompts = !hasPrompt && !templateFile
 
   useEffect(
     () => () => {
@@ -258,153 +295,132 @@ function QuickStartInput({
   }
 
   return (
-    <section className="relative min-h-screen overflow-hidden border border-app-line bg-app-canvas text-app-ink shadow-app-page">
+    <section className="relative min-h-[100dvh] overflow-hidden border border-app-line bg-app-canvas pt-14 text-app-ink shadow-app-page">
       <AmbientGrid />
 
-      <div className="relative z-10 grid min-h-screen grid-rows-[auto_1fr_auto] p-5 sm:p-8">
-        <header className="flex items-start justify-between gap-6">
-          <div>
-            <p className="font-mono text-[10px] font-bold tracking-[0.16em] text-app-muted">
-              QUICK START / CREATE CHARACTER
-            </p>
-            <h1 className="mt-3 max-w-3xl font-serif text-3xl leading-tight tracking-[-0.035em] sm:text-5xl">
-              用一句角色设定，
-              <br />
-              开始一条可追踪的制作流程。
-            </h1>
-          </div>
-          <span className="hidden rounded-full border border-app-line-strong bg-app-surface/80 px-4 py-2 text-xs font-semibold text-app-accent sm:inline-flex">
-            AI 快捷创作
-          </span>
-        </header>
-
-        <div className="grid items-center gap-8 py-12 lg:grid-cols-[1fr_220px]">
-          <button
-            type="button"
-            onClick={() => setPrompt(EXAMPLES[0].prompt)}
-            className="group flex min-h-24 w-full items-center gap-4 rounded-full border border-app-line bg-app-surface-raised px-7 text-left shadow-app-card transition hover:-translate-y-0.5 hover:border-app-line-strong focus-visible:outline-2 focus-visible:outline-offset-4 focus-visible:outline-app-accent motion-reduce:transform-none"
-          >
-            <span className="shrink-0 text-sm font-semibold text-app-faint">你可能想做：</span>
-            <strong className="text-base font-semibold text-app-accent sm:text-xl">
-              {EXAMPLES[0].prompt}
-            </strong>
-          </button>
+      <div
+        data-layout="quick-start-entry"
+        className="relative z-10 grid min-h-[calc(100dvh-3.5rem)] grid-rows-[1fr_auto] gap-6 px-5 py-6 sm:px-8 sm:pb-8 sm:pt-10"
+      >
+        <div className="mx-auto grid w-full max-w-3xl content-center gap-5 pb-8 sm:gap-6">
+          <KineticCopyCycle
+            active={!templateFile && !submitting}
+            as="h1"
+            ariaLabel="想做一个什么角色？"
+            motionMode="characters"
+            firstCycleMs={2_400}
+            loopStartIndex={1}
+            messages={hasPrompt ? ROLE_DEFAULT_MESSAGE : ROLE_IDEA_MESSAGES}
+            className="min-h-12 text-center font-serif text-[clamp(1.75rem,4vw,2.65rem)] leading-none font-medium tracking-[-0.045em]"
+          />
 
           <div
-            className="mx-auto grid aspect-square w-44 grid-cols-7 gap-1 rounded-[1.4rem] border border-app-line bg-app-surface p-5 shadow-app-card"
-            aria-hidden="true"
+            data-layout="quick-start-starters"
+            data-presence={showStylePrompts ? 'visible' : 'hidden'}
+            aria-hidden={!showStylePrompts}
+            className={`grid gap-2 transition-[opacity,transform,filter] duration-[460ms] ease-[cubic-bezier(0.16,1,0.3,1)] motion-reduce:transition-none sm:grid-cols-3 ${
+              showStylePrompts
+                ? 'translate-y-0 scale-100 opacity-100 blur-0'
+                : 'pointer-events-none -translate-y-2 scale-[0.985] opacity-0 blur-[6px]'
+            }`}
           >
-            {Array.from({ length: 49 }, (_, index) => {
-              const row = Math.floor(index / 7)
-              const column = index % 7
-              const active =
-                (row === 1 && column >= 2 && column <= 4) ||
-                (row >= 2 && row <= 4 && column >= 1 && column <= 5) ||
-                (row === 5 && (column === 2 || column === 4))
-              return (
-                <i
-                  key={index}
-                  className={`rounded-[2px] ${active ? 'bg-app-accent' : 'bg-app-line'}`}
-                />
-              )
-            })}
-          </div>
-        </div>
-
-        <div>
-          <div className="mb-3 flex flex-wrap gap-2">
-            {EXAMPLES.slice(1).map((example) => (
+            {STYLE_PROMPTS.map((stylePrompt) => (
               <button
-                key={example.label}
+                key={stylePrompt.title}
                 type="button"
-                onClick={() => setPrompt(example.prompt)}
-                className="rounded-full border border-app-line bg-app-surface px-3 py-1.5 text-[11px] font-medium text-app-muted hover:border-app-line-strong hover:text-app-accent"
+                disabled={!showStylePrompts}
+                aria-label={`${stylePrompt.title}：${stylePrompt.detail}`}
+                onClick={() => setPrompt(stylePrompt.prompt)}
+                className="group grid min-h-16 content-center gap-1 rounded-xl border border-app-line bg-app-surface/70 px-4 py-3 text-left transition duration-200 hover:-translate-y-0.5 hover:border-app-line-strong hover:bg-app-surface-raised hover:shadow-app-card focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-app-accent motion-reduce:transform-none"
               >
-                {example.label}
+                <strong className="text-sm font-semibold text-app-ink">{stylePrompt.title}</strong>
+                <span className="text-[11px] text-app-muted">{stylePrompt.detail}</span>
               </button>
             ))}
           </div>
+        </div>
 
+        <div data-layout="quick-start-composer" className="mx-auto w-full max-w-3xl self-end">
           <form
             onSubmit={(event) => void submit(event)}
-            className="grid gap-3 rounded-[1.4rem] border border-app-line-strong bg-app-surface-raised p-4 shadow-app-panel sm:grid-cols-[1fr_auto]"
+            className="grid items-center gap-1.5 rounded-xl border border-app-line-strong bg-app-surface-raised p-1.5 shadow-app-panel transition-shadow focus-within:border-app-accent focus-within:shadow-[var(--shadow-app-composer-focus)] sm:grid-cols-[1fr_auto_auto]"
           >
-            <label className="grid gap-2" htmlFor="quick-start-prompt">
+            <label className="min-w-0" htmlFor="quick-start-prompt">
               <span className="sr-only">创作指令</span>
-              <textarea
+              <input
                 id="quick-start-prompt"
+                type="text"
                 aria-label="创作指令"
                 value={prompt}
                 onChange={(event) => setPrompt(event.target.value)}
-                rows={2}
                 placeholder={
-                  templateFile
-                    ? '例如：挥手打招呼、提灯前行（可留空生成待机动作）'
-                    : '描述你想生成的角色、身份特征和视觉风格…'
+                  templateFile ? '描述动作，可留空生成待机动作…' : '描述角色的外形、身份和气质…'
                 }
-                className="min-h-16 w-full resize-none border-0 bg-transparent px-2 py-1 text-[15px] leading-relaxed text-app-ink outline-none placeholder:text-app-faint"
+                className="h-10 w-full min-w-0 border-0 bg-transparent px-3 text-[15px] text-app-ink outline-none placeholder:text-app-faint"
               />
-              <span className="flex flex-wrap items-center gap-2 px-2 text-[10px] text-app-faint">
-                <b className="rounded-full border border-app-line bg-app-surface-muted px-2.5 py-1 font-medium text-app-ink-soft">
-                  文字创建
-                </b>
-                {templateFile
-                  ? '动作描述（可选）：留空生成待机动作'
-                  : '角色图生成后仍需人工选择候选'}
-              </span>
-              {templateFile ? (
-                <span className="flex flex-wrap items-center gap-2 px-2 text-[11px] text-app-ink-soft">
-                  <b className="max-w-full truncate font-medium">{templateFile.name}</b>
-                  <button
-                    type="button"
-                    onClick={removeTemplateFile}
-                    className="rounded-full border border-app-line-strong px-2 py-0.5 text-[10px] hover:border-app-line-strong hover:text-app-accent"
-                  >
-                    移除图片
-                  </button>
-                </span>
-              ) : null}
-              {templateFile && isCustomActionDescription(prompt) ? (
-                <label className="flex items-start gap-2 px-2 text-[10px] text-app-faint">
-                  <input
-                    type="checkbox"
-                    checked={actionLoop}
-                    onChange={(event) => setActionLoop(event.target.checked)}
-                    className="mt-0.5"
-                  />
-                  <span>循环播放：走路/待机这类可无缝重复的勾选；攻击/跳跃这类做一次的不要勾</span>
-                </label>
-              ) : null}
             </label>
 
-            <div className="flex min-w-32 flex-col gap-2">
-              <input
-                ref={fileInput}
-                type="file"
-                accept="image/*"
-                aria-label="上传角色母版"
-                className="sr-only"
-                onChange={selectTemplateFile}
-              />
+            <input
+              ref={fileInput}
+              type="file"
+              accept="image/*"
+              aria-label="上传角色母版"
+              className="sr-only"
+              onChange={selectTemplateFile}
+            />
+            {templateFile ? (
+              <span className="flex h-10 min-w-0 max-w-56 items-center rounded-lg bg-app-surface-muted text-xs text-app-ink-soft">
+                <button
+                  type="button"
+                  aria-label={`更换母版 ${templateFile.name}`}
+                  onClick={() => fileInput.current?.click()}
+                  className="inline-flex h-full min-w-0 items-center gap-2 rounded-l-lg px-2.5 font-semibold transition hover:bg-app-surface hover:text-app-accent focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-app-accent"
+                >
+                  <ImageSquare aria-hidden="true" size={16} weight="duotone" />
+                  <span className="max-w-32 truncate">{templateFile.name}</span>
+                </button>
+                <button
+                  type="button"
+                  aria-label="移除图片"
+                  onClick={removeTemplateFile}
+                  className="grid size-8 shrink-0 place-items-center rounded-md text-app-muted transition hover:bg-app-surface hover:text-app-accent focus-visible:z-10 focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-app-accent"
+                >
+                  <X aria-hidden="true" size={14} weight="bold" />
+                </button>
+              </span>
+            ) : (
               <button
                 type="button"
                 onClick={() => fileInput.current?.click()}
-                className="min-h-9 rounded-xl border border-app-line-strong bg-app-surface px-4 text-xs font-semibold text-app-ink-soft transition hover:border-app-line-strong hover:text-app-accent"
+                className="inline-flex h-10 items-center gap-2 rounded-lg px-3 text-xs font-semibold whitespace-nowrap text-app-muted transition hover:bg-app-surface-muted hover:text-app-accent focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-app-accent"
               >
-                {templateFile ? '更换图片' : '上传角色母版'}
+                <ImageSquare aria-hidden="true" size={17} weight="duotone" />
+                添加母版
               </button>
-              <button
-                type="submit"
-                disabled={
-                  (!prompt.trim() && !templateFile) || submitting || Boolean(unavailableReason)
-                }
-                className="min-h-14 rounded-[1rem] bg-app-accent px-5 text-sm font-bold text-app-on-accent transition hover:bg-app-accent-hover disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {submitting ? '正在创建…' : '开始生成'}
-              </button>
-            </div>
+            )}
+            <button
+              type="submit"
+              disabled={
+                (!prompt.trim() && !templateFile) || submitting || Boolean(unavailableReason)
+              }
+              className="inline-flex h-10 items-center gap-2 rounded-lg bg-app-accent px-4 text-sm font-bold whitespace-nowrap text-app-on-accent transition hover:bg-app-accent-hover active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45"
+            >
+              {submitting ? '正在创建…' : '生成角色'}
+              {!submitting ? <ArrowUp aria-hidden="true" size={16} weight="bold" /> : null}
+            </button>
           </form>
 
+          {templateFile && isCustomActionDescription(prompt) ? (
+            <label className="mt-3 flex items-start gap-2 px-1 text-[11px] text-app-muted">
+              <input
+                type="checkbox"
+                checked={actionLoop}
+                onChange={(event) => setActionLoop(event.target.checked)}
+                className="mt-0.5"
+              />
+              <span>循环播放：走路/待机这类可无缝重复的勾选；攻击/跳跃这类做一次的不要勾</span>
+            </label>
+          ) : null}
           {unavailableReason ? (
             <p className="mt-3 rounded-xl border border-app-warning-line bg-app-warning-soft px-4 py-3 text-sm text-app-warning">
               {unavailableReason}
