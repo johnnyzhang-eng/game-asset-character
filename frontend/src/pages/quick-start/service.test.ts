@@ -915,6 +915,7 @@ describe('createQuickStartService', () => {
           name: '默认造型',
           description: null,
           previewUrl: 'existing.png',
+          model3dUrl: null,
           actions: [],
         },
       ],
