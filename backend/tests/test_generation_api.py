@@ -343,3 +343,22 @@ def test_action_with_3d_outfit_is_accepted_without_reference_images(auth_client)
 
     assert body["data"] is not None, body
     assert body["data"]["status"] == "pending"
+
+
+def test_validation_error_message_tells_the_user_what_is_wrong(auth_client):
+    """校验失败的 message 必须是可读原因,不是一句笼统的"请求参数校验失败"。
+
+    前端展示的是 message;把原因只塞进 data 等于用户永远看不到 —— 实测用户看到的是
+    读不懂的"请求参数校验失败",而"custom 动作必须提供 custom_prompt"就在 data 里躺着。
+    """
+    project = _create_project(auth_client)
+    r = auth_client.post("/generation/action", json={
+        "project_id": project["id"], "character_id": 1,
+        "action_type": "custom", "custom_prompt": "",
+        "num_frames": 32, "reference_image_urls": ["https://media.windup.xin/x.png"],
+    })
+    body = r.json()
+    assert body["code"] == 400
+    assert body["message"] != "请求参数校验失败", "还是笼统文案,用户看不懂"
+    assert "custom_prompt" in body["message"] or "动作" in body["message"]
+    assert not body["message"].startswith("Value error,"), "pydantic 前缀是噪声,该剥掉"
